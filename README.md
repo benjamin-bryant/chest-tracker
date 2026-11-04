@@ -17,7 +17,7 @@
   <img alt="MIT license" src="https://img.shields.io/badge/License-MIT-F4B42A?style=flat-square">
 </p>
 
-Chest Tracker counts the Fortnite chests you and your friends open and keeps a shared leaderboard in Discord. It's one small app with nothing to install, and it runs quietly in your system tray while you play.
+Chest Tracker counts the Fortnite chests you and your friends open and keeps a shared leaderboard in Discord. It's a single download with nothing to install, and it runs quietly in your system tray while you play.
 
 <p align="center">
   <img src="docs/images/demo.gif" alt="The app's chest lifting its lid during a search, slamming shut on a cancel, then bursting with coins when a chest counts" width="85%">
