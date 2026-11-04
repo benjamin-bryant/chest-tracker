@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="../../releases/latest"><b>Download for Windows</b></a>
+  <a href="../../releases/latest/download/Chest-Tracker.exe"><b>Download for Windows</b></a>
   &nbsp;&nbsp;|&nbsp;&nbsp;
   <a href="#how-a-chest-gets-counted">How counting works</a>
   &nbsp;&nbsp;|&nbsp;&nbsp;
@@ -11,6 +11,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/Xxoris190/chest-tracker/actions/workflows/tests.yml"><img alt="Tests" src="https://github.com/Xxoris190/chest-tracker/actions/workflows/tests.yml/badge.svg"></a>
   <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-2A1C3A?style=flat-square">
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-2A1C3A?style=flat-square">
   <img alt="MIT license" src="https://img.shields.io/badge/License-MIT-F4B42A?style=flat-square">
@@ -35,7 +36,7 @@ Chest Tracker counts the Fortnite chests you and your friends open and keeps a s
 
 ## Get started
 
-1. Download `Chest Tracker.exe` from the [latest release](../../releases/latest) and double-click it.
+1. Download [`Chest-Tracker.exe`](../../releases/latest/download/Chest-Tracker.exe) and double-click it.
 2. If Windows shows "Windows protected your PC", select **More info**, then **Run anyway**. It appears because the app isn't signed with a paid certificate.
 3. Open **Setup** and go through the four steps:
    1. **Your name:** how you appear on the leaderboard.
