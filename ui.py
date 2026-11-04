@@ -1,0 +1,1168 @@
+"""The Chest Tracker window."""
+
+import ctypes
+import logging
+import sqlite3
+import threading
+import time
+from datetime import datetime
+from pathlib import Path
+
+import cv2
+import numpy as np
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import (
+    QAction, QColor, QDesktopServices, QIcon, QImage, QKeyEvent, QMouseEvent, QPainter, QPen, QPixmap,
+    QWheelEvent,
+)
+from PySide6.QtWidgets import (
+    QApplication, QButtonGroup, QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
+    QSystemTrayIcon, QVBoxLayout, QWidget,
+)
+
+from bot import BotRunner
+from detection import CANCELLED, PENDING, PromptMatcher
+from settings import Settings, Stats
+from store import Store
+from watcher import (
+    VK_F8, KeyEdge, Sender, WatchEngine, capture_focused_screen, check_webhook, fortnite_focused,
+    interact_check, selection_too_big,
+)
+from widgets import (
+    BONE, DUSK, EMBER, GOLD, LILAC, LINE, MINT, NIGHT, ChestStage, LeaderRow, MatchMeter, StepBadge, TallyMarks,
+)
+
+log = logging.getLogger("chest-tracker")
+
+STYLE = f"""
+* {{ font-family: "Segoe UI Variable Text", "Segoe UI"; font-size: 14px; color: {BONE}; }}
+QMainWindow, QDialog, #page, QScrollArea, #scrollBody {{ background: {NIGHT}; }}
+QScrollArea {{ border: none; }}
+#topbar {{ background: {NIGHT}; border-bottom: 1px solid {LINE}; }}
+#brand {{ font-family: "Bahnschrift SemiBold Condensed"; font-size: 23px; }}
+#tab {{ background: transparent; border: none; border-bottom: 3px solid transparent; border-radius: 0;
+        padding: 16px 16px 13px 16px; color: {LILAC}; font-size: 15px; font-weight: 500; }}
+#tab:hover {{ color: {BONE}; }}
+#tab:checked {{ color: {GOLD}; border-bottom-color: {GOLD}; }}
+#tab:focus {{ color: {BONE}; background: {DUSK}; }}
+#heading {{ font-family: "Bahnschrift SemiBold Condensed"; font-size: 36px; }}
+#subheading {{ font-family: "Bahnschrift SemiBold Condensed"; font-size: 21px; color: {BONE}; }}
+#muted {{ color: {LILAC}; }}
+#small {{ color: {LILAC}; font-size: 12px; }}
+#rail {{ background: {DUSK}; border-left: 1px solid {LINE}; }}
+#todayCount {{ font-family: "Bahnschrift SemiBold Condensed"; font-size: 54px; color: {GOLD}; }}
+#notice {{ background: {DUSK}; border-bottom: 1px solid {LINE}; }}
+#pill {{ border: 1px solid {LINE}; border-radius: 14px; min-height: 18px; padding: 4px 12px; font-size: 13px; }}
+QLineEdit {{ background: {NIGHT}; border: 1px solid {LINE}; border-radius: 5px; padding: 9px 11px;
+             selection-background-color: {GOLD}; selection-color: {NIGHT}; }}
+QLineEdit:hover {{ border-color: {LILAC}; }}
+QLineEdit:focus {{ border: 1px solid {GOLD}; }}
+QPushButton {{ background: {DUSK}; border: 1px solid {LINE}; border-radius: 5px; padding: 9px 15px; font-weight: 500; }}
+QPushButton:hover {{ background: #38264B; border-color: {LILAC}; }}
+QPushButton:pressed {{ background: {NIGHT}; }}
+QPushButton:focus {{ border: 1px solid {GOLD}; }}
+QPushButton:disabled {{ color: #7A6B8C; background: {NIGHT}; border-color: {DUSK}; }}
+#primary {{ background: {GOLD}; color: {NIGHT}; border: 1px solid {GOLD}; font-weight: 600; }}
+#primary:hover {{ background: #FFCB55; border-color: #FFCB55; }}
+#primary:pressed {{ background: #D69A1C; }}
+#primary:focus {{ border: 2px solid {BONE}; }}
+#primary:disabled {{ background: #3E3044; color: #8A7C8E; border-color: #3E3044; }}
+#capture {{ text-align: left; padding: 12px 15px; font-family: "Bahnschrift SemiBold Condensed"; font-size: 19px; }}
+#capture[listening="true"] {{ border: 1px solid {GOLD}; color: {GOLD}; background: {NIGHT}; }}
+#step {{ background: transparent; }}
+#stepHeader {{ background: transparent; border: none; border-radius: 5px; text-align: left; padding: 8px 10px;
+               font-family: "Bahnschrift SemiBold Condensed"; font-size: 21px; }}
+#stepHeader:hover {{ background: {DUSK}; }}
+#stepHeader:focus {{ background: {DUSK}; color: {GOLD}; }}
+#disclosure {{ background: transparent; border: none; text-align: left; padding: 6px 0; color: {LILAC}; }}
+#disclosure:hover {{ color: {BONE}; }}
+#disclosure:focus {{ color: {GOLD}; }}
+#promptThumb {{ background: {NIGHT}; border: 1px solid {LINE}; border-radius: 5px; padding: 8px; }}
+QListWidget {{ background: transparent; border: none; outline: none; }}
+QListWidget::item {{ padding: 6px 0; border: none; }}
+QListWidget::item:selected {{ background: transparent; }}
+QCheckBox {{ spacing: 9px; }}
+QCheckBox::indicator {{ width: 17px; height: 17px; border: 1px solid {LILAC}; border-radius: 4px; background: {NIGHT}; }}
+QCheckBox::indicator:checked {{ background: {GOLD}; border-color: {GOLD}; }}
+QCheckBox:focus {{ color: {GOLD}; }}
+QScrollBar:vertical {{ background: transparent; width: 10px; }}
+QScrollBar::handle:vertical {{ background: {LINE}; border-radius: 5px; min-height: 30px; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+QMenu {{ background: {DUSK}; border: 1px solid {LINE}; padding: 4px; }}
+QMenu::item {{ padding: 7px 24px; border-radius: 4px; }}
+QMenu::item:selected {{ background: #38264B; }}
+QToolTip {{ background: {DUSK}; color: {BONE}; border: 1px solid {LINE}; padding: 4px; }}
+"""
+
+STATES = {
+    "off": (LILAC, "Paused"),
+    "setup": (GOLD, "Setup isn't finished"),
+    "waiting": (LILAC, "Waiting for Fortnite"),
+    "watching": (MINT, "Watching for chests"),
+    "black": (EMBER, "Can't see the game"),
+}
+
+KEY_LABELS = {
+    "WHEELUP": "Scroll wheel up", "WHEELDOWN": "Scroll wheel down", "MOUSE1": "Left mouse",
+    "MOUSE2": "Right mouse", "MOUSE3": "Middle mouse", "MOUSE4": "Mouse back", "MOUSE5": "Mouse forward",
+}
+
+MOUSE_NAMES = {
+    Qt.MouseButton.LeftButton: "MOUSE1", Qt.MouseButton.RightButton: "MOUSE2",
+    Qt.MouseButton.MiddleButton: "MOUSE3", Qt.MouseButton.BackButton: "MOUSE4",
+    Qt.MouseButton.ForwardButton: "MOUSE5",
+}
+
+
+def key_label(name: str) -> str:
+    return KEY_LABELS.get(name.upper(), name.upper())
+
+
+def qt_key_name(key: int) -> str | None:
+    """The settings name for a pressed Qt key, or None if it can't be used."""
+    if Qt.Key.Key_A <= key <= Qt.Key.Key_Z or Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
+        return chr(key)
+    if Qt.Key.Key_F1 <= key <= Qt.Key.Key_F12:
+        number = key - Qt.Key.Key_F1 + 1
+        return None if number in (8, 10) else f"F{number}"  # used by the app's own hotkeys
+    return {
+        Qt.Key.Key_Space: "SPACE", Qt.Key.Key_Shift: "SHIFT", Qt.Key.Key_Control: "CTRL",
+        Qt.Key.Key_Alt: "ALT", Qt.Key.Key_Tab: "TAB",
+    }.get(key)
+
+
+def label(text: str, name: str = "", wrap: bool = False) -> QLabel:
+    widget = QLabel(text)
+    if name:
+        widget.setObjectName(name)
+    widget.setWordWrap(wrap)
+    return widget
+
+
+def dark_title_bar(window: QWidget) -> None:
+    """Colors the Windows title bar to match the app. Older Windows just ignores this."""
+    handle = int(window.winId())
+    dwm = ctypes.windll.dwmapi
+    enabled = ctypes.c_int(1)
+    dwm.DwmSetWindowAttribute(handle, 20, ctypes.byref(enabled), ctypes.sizeof(enabled))
+    color = QColor(NIGHT)
+    caption = ctypes.c_int(color.red() | color.green() << 8 | color.blue() << 16)
+    dwm.DwmSetWindowAttribute(handle, 35, ctypes.byref(caption), ctypes.sizeof(caption))
+
+
+def scroll_page(margins: tuple[int, int, int, int] = (40, 30, 40, 34)) -> tuple[QScrollArea, QVBoxLayout]:
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    body = QWidget()
+    body.setObjectName("scrollBody")
+    scroll.setWidget(body)
+    layout = QVBoxLayout(body)
+    layout.setContentsMargins(*margins)
+    layout.setSpacing(14)
+    return scroll, layout
+
+
+class Pill(QLabel):
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("pill")
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+
+    def show_state(self, color: str, text: str) -> None:
+        self.setText(f'<span style="color:{color}">●</span>&nbsp; {text}')
+        self.setAccessibleName(text)
+
+
+class KeyCapture(QPushButton):
+    """Click it, then press the key, mouse button or scroll direction you use."""
+
+    captured = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("capture")
+        self.current = "E"
+        self.listening = False
+        self.clicked.connect(self._listen)
+        self._refresh()
+
+    def set_key(self, name: str) -> None:
+        self.current = name
+        self._refresh()
+
+    def _refresh(self) -> None:
+        self.setText("Press your interact key (Esc cancels)" if self.listening else key_label(self.current))
+        self.setProperty("listening", self.listening)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def _listen(self) -> None:
+        self.listening = True
+        self.grabKeyboard()
+        self.grabMouse()
+        self._refresh()
+
+    def _finish(self, name: str | None) -> None:
+        self.listening = False
+        self.releaseKeyboard()
+        self.releaseMouse()
+        if name:
+            self.current = name
+            self.captured.emit(name)
+        self._refresh()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if not self.listening:
+            super().keyPressEvent(event)
+        elif event.key() == Qt.Key.Key_Escape:
+            self._finish(None)
+        else:
+            name = qt_key_name(event.key())
+            if name:
+                self._finish(name)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if self.listening:
+            self._finish(MOUSE_NAMES.get(event.button()))
+        else:
+            super().mousePressEvent(event)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        if self.listening and event.angleDelta().y():
+            self._finish("WHEELUP" if event.angleDelta().y() > 0 else "WHEELDOWN")
+        else:
+            super().wheelEvent(event)
+
+
+class SelectionView(QWidget):
+    """Shows a screenshot and lets you drag a box. Big boxes zoom in so tiny text is easy to pick."""
+
+    selected = Signal(object)  # (x, y, width, height) in image pixels, or None
+
+    def __init__(self, image: np.ndarray):
+        super().__init__()
+        self.image = image
+        height, width = image.shape[:2]
+        self.qimage = QImage(image.data, width, height, image.strides[0], QImage.Format.Format_RGB32).copy()
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.setMinimumSize(640, 360)
+        self.reset()
+
+    def reset(self) -> None:
+        self.view = QRect(0, 0, self.qimage.width(), self.qimage.height())
+        self.selection: QRect | None = None
+        self.drag_start: QPoint | None = None
+        self.drag_now: QPoint | None = None
+        self.selected.emit(None)
+        self.update()
+
+    def target(self) -> QRect:
+        scale = min(self.width() / self.view.width(), self.height() / self.view.height())
+        width, height = int(self.view.width() * scale), int(self.view.height() * scale)
+        return QRect((self.width() - width) // 2, (self.height() - height) // 2, width, height)
+
+    def to_image(self, point: QPoint) -> QPoint:
+        target = self.target()
+        x = self.view.x() + (point.x() - target.x()) * self.view.width() / target.width()
+        y = self.view.y() + (point.y() - target.y()) * self.view.height() / target.height()
+        return QPoint(int(x), int(y))
+
+    def to_widget(self, rect: QRect) -> QRect:
+        target = self.target()
+        scale = target.width() / self.view.width()
+        return QRect(
+            target.x() + int((rect.x() - self.view.x()) * scale),
+            target.y() + int((rect.y() - self.view.y()) * scale),
+            int(rect.width() * scale),
+            int(rect.height() * scale),
+        )
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(DUSK))
+        painter.drawImage(self.target(), self.qimage, self.view)
+        painter.setPen(QPen(QColor(GOLD), 2))
+        if self.drag_start and self.drag_now:
+            painter.drawRect(QRect(self.drag_start, self.drag_now).normalized())
+        elif self.selection:
+            painter.drawRect(self.to_widget(self.selection))
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        self.drag_start = self.drag_now = event.position().toPoint()
+        self.update()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        self.drag_now = event.position().toPoint()
+        self.update()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        start, end = self.to_image(self.drag_start), self.to_image(event.position().toPoint())
+        self.drag_start = self.drag_now = None
+        box = QRect(start, end).normalized().intersected(self.qimage.rect())
+        if box.width() < 6 or box.height() < 6:
+            self.update()
+            return
+        if selection_too_big(box.width(), box.height(), self.qimage.height()):
+            margin = 12
+            self.view = box.adjusted(-margin, -margin, margin, margin).intersected(self.qimage.rect())
+            self.selection = None
+            self.selected.emit(None)
+        else:
+            self.selection = box
+            self.selected.emit((box.x(), box.y(), box.width(), box.height()))
+        self.update()
+
+
+class PromptDialog(QDialog):
+    """Guides the player through saving a picture of the SEARCH prompt."""
+
+    def __init__(self, parent: QWidget, templates_dir: Path, search_area: list[float]):
+        super().__init__(parent)
+        self.templates_dir = templates_dir
+        self.search_area = search_area
+        self.setWindowTitle("Set up the chest prompt")
+        self.setMinimumSize(560, 340)
+        self.outer = QVBoxLayout(self)
+        self.outer.setContentsMargins(28, 24, 28, 24)
+        self.outer.setSpacing(14)
+        self.heading = label("Capture the prompt", "heading")
+        self.outer.addWidget(self.heading)
+        self.instructions = label(
+            "1.  Open Fortnite in <b>Windowed Fullscreen</b>.<br>"
+            "2.  Walk up to a chest so the <b>SEARCH</b> prompt shows.<br>"
+            "3.  Press <b>F8</b> while still in the game.",
+            wrap=True,
+        )
+        self.outer.addWidget(self.instructions)
+        self.status = label("Waiting for F8.", "muted", wrap=True)
+        self.outer.addWidget(self.status)
+        self.outer.addStretch(1)
+        self.footer = QHBoxLayout()
+        self.footer.addStretch(1)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        self.footer.addWidget(cancel)
+        self.outer.addLayout(self.footer)
+
+        self.hotkey = KeyEdge(VK_F8)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._poll)
+        self.timer.start(30)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        dark_title_bar(self)
+
+    def _poll(self) -> None:
+        if not self.hotkey.pressed():
+            return
+        if not fortnite_focused():
+            self.status.setText("Fortnite wasn't the active window. Click into the game and press F8 again.")
+            return
+        self.timer.stop()
+        self.show_selection(capture_focused_screen())
+        self.raise_()
+        self.activateWindow()
+
+    def show_selection(self, image: np.ndarray) -> None:
+        self.image = image
+        self.selection = None
+        self.heading.setText("Select the word SEARCH")
+        self.instructions.setText(
+            "Drag a box around the prompt to zoom in, then drag a tight box around only the word "
+            "<b>SEARCH</b>. Leave out the chest, your character and the key icon."
+        )
+        self.status.hide()
+        self.view = SelectionView(image)
+        self.view.selected.connect(self._selected)
+        self.outer.insertWidget(2, self.view, 1)
+        self.outer.setStretch(4, 0)  # the empty space under the instructions goes to the screenshot
+
+        self.preview = QLabel()
+        self.footer.insertWidget(0, self.preview)
+        again = QPushButton("Start over")
+        again.clicked.connect(self.view.reset)
+        self.footer.insertWidget(2, again)
+        self.save = QPushButton("Save prompt")
+        self.save.setObjectName("primary")
+        self.save.setEnabled(False)
+        self.save.clicked.connect(self._save)
+        self.footer.addWidget(self.save)
+        self.showMaximized()
+
+    def _selected(self, box) -> None:
+        self.selection = box
+        self.save.setEnabled(box is not None)
+        if box is None:
+            self.preview.clear()
+            return
+        x, y, width, height = box
+        rect = QRect(x, y, width, height)
+        self.preview.setPixmap(QPixmap.fromImage(self.view.qimage.copy(rect)).scaledToHeight(
+            min(44, height * 3), Qt.TransformationMode.FastTransformation
+        ))
+
+    def _save(self) -> None:
+        x, y, width, height = self.selection
+        screen_height, screen_width = self.image.shape[:2]
+        left, top, right, bottom = self.search_area
+        if (
+            x < left * screen_width or x + width > right * screen_width
+            or y < top * screen_height or y + height > bottom * screen_height
+        ):
+            QMessageBox.warning(
+                self, "Outside the watched area",
+                "That spot is too close to the screen edge for the app to watch. Select the prompt near the center.",
+            )
+            return
+        gray = cv2.cvtColor(self.image[y:y + height, x:x + width], cv2.COLOR_BGRA2GRAY)
+        self.templates_dir.mkdir(exist_ok=True)
+        numbers = [int(p.stem.split("_")[-1]) for p in self.templates_dir.glob("chest_*.png")]
+        cv2.imwrite(str(self.templates_dir / f"chest_{max(numbers, default=0) + 1}.png"), gray)
+        self.accept()
+
+
+class TrackerPage(QWidget):
+    def __init__(self, window: "MainWindow"):
+        super().__init__()
+        self.setObjectName("page")
+        columns = QHBoxLayout(self)
+        columns.setContentsMargins(0, 0, 0, 0)
+        columns.setSpacing(0)
+
+        left = QVBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(0)
+        self.notice_frame = QFrame()
+        self.notice_frame.setObjectName("notice")
+        notice_row = QHBoxLayout(self.notice_frame)
+        notice_row.setContentsMargins(22, 12, 16, 12)
+        self.notice = label("", wrap=True)
+        notice_row.addWidget(self.notice, 1)
+        finish = QPushButton("Finish setup")
+        finish.setObjectName("primary")
+        finish.clicked.connect(lambda: window.go_to(1))
+        notice_row.addWidget(finish)
+        left.addWidget(self.notice_frame)
+        self.stage = ChestStage()
+        left.addWidget(self.stage, 1)
+        columns.addLayout(left, 1)
+
+        rail = QFrame()
+        rail.setObjectName("rail")
+        rail.setFixedWidth(330)
+        side = QVBoxLayout(rail)
+        side.setContentsMargins(24, 22, 24, 20)
+        side.setSpacing(6)
+
+        today_row = QHBoxLayout()
+        self.today = label("0", "todayCount")
+        today_row.addWidget(self.today)
+        today_row.addWidget(label("today", "muted"), 0, Qt.AlignmentFlag.AlignBottom)
+        today_row.addStretch(1)
+        side.addLayout(today_row)
+        self.tally = TallyMarks()
+        side.addWidget(self.tally)
+        self.session = label("0 this session", "muted")
+        side.addWidget(self.session)
+        side.addSpacing(14)
+
+        side.addWidget(label("Recent", "subheading"))
+        self.activity = QListWidget()
+        self.activity.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.activity.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.activity.setWordWrap(True)
+        side.addWidget(self.activity, 1)
+        self.empty = QListWidgetItem("Open a chest in Fortnite and it appears here.")
+        self.empty.setForeground(QColor(LILAC))
+        self.activity.addItem(self.empty)
+
+        actions = QHBoxLayout()
+        self.remove = QPushButton("Remove last chest")
+        self.remove.setToolTip("Counted one by mistake? You can also press F10 in game.")
+        self.remove.clicked.connect(lambda: window.record_chest(-1, "manual"))
+        actions.addWidget(self.remove, 1)
+        self.pause = QPushButton("Pause")
+        self.pause.clicked.connect(window.toggle_pause)
+        actions.addWidget(self.pause)
+        side.addLayout(actions)
+        columns.addWidget(rail)
+
+    def show_stats(self, stats: Stats) -> None:
+        self.today.setText(f"{stats.today:,}")
+        self.tally.set_count(stats.today)
+        self.session.setText(f"{stats.session:,} this session")
+        self.remove.setEnabled(stats.total > 0)
+
+    def log(self, text: str, color: str = BONE) -> None:
+        if self.empty is not None:
+            self.activity.takeItem(self.activity.row(self.empty))
+            self.empty = None
+        top = self.activity.item(0)
+        line = f"{datetime.now():%H:%M}   {text}"
+        if top and top.text() == line:
+            return
+        item = QListWidgetItem(line)
+        item.setForeground(QColor(color))
+        self.activity.insertItem(0, item)
+        while self.activity.count() > 100:
+            self.activity.takeItem(self.activity.count() - 1)
+
+
+class Step(QWidget):
+    """One numbered setup step. Its body opens when the header is clicked."""
+
+    opened = Signal(object)
+
+    def __init__(self, number: int, title: str, last: bool = False):
+        super().__init__()
+        self.setObjectName("step")
+        self.last = last
+        self.title = title
+        grid = QVBoxLayout(self)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(0)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.badge = StepBadge(number)
+        row.addWidget(self.badge)
+        self.header = QPushButton(title)
+        self.header.setObjectName("stepHeader")
+        self.header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.header.clicked.connect(lambda: self.opened.emit(self))
+        row.addWidget(self.header, 1)
+        self.summary = label("", "muted")
+        self.summary.setTextFormat(Qt.TextFormat.PlainText)
+        row.addWidget(self.summary)
+        grid.addLayout(row)
+        self.body = QWidget()
+        self.content = QVBoxLayout(self.body)
+        self.content.setContentsMargins(46, 6, 2, 14)
+        self.content.setSpacing(10)
+        grid.addWidget(self.body)
+        grid.addSpacing(14)
+        self.done = False
+        self.set_open(False)
+
+    def set_open(self, is_open: bool) -> None:
+        self.is_open = is_open
+        self.body.setVisible(is_open)
+        self.summary.setVisible(not is_open)
+        self.badge.set_status(self.done, is_open)
+
+    def set_done(self, done: bool, summary: str) -> None:
+        self.done = done
+        self.summary.setText(summary if done else "Not done yet")
+        self.badge.set_status(done, self.is_open)
+
+    def paintEvent(self, event) -> None:
+        if self.last:
+            return
+        p = QPainter(self)
+        p.setPen(QPen(QColor(LINE), 2))
+        p.drawLine(15, 34, 15, self.height())
+
+
+class SetupPage(QWidget):
+    webhook_result = Signal(bool, str)
+
+    def __init__(self, window: "MainWindow"):
+        super().__init__()
+        self.window_ = window
+        settings = window.settings
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll, layout = scroll_page()
+        outer.addWidget(scroll)
+        layout.setSpacing(4)
+        layout.addWidget(label("Setup", "heading"))
+        layout.addWidget(label("Four steps. Everything saves as you go.", "muted"))
+        layout.addSpacing(14)
+
+        self.name_step = Step(1, "Your name")
+        self.name_step.content.addWidget(label("This is how you appear on your group's leaderboard.", "muted", wrap=True))
+        self.name = QLineEdit(settings["player_name"])
+        self.name.setPlaceholderText("Player name")
+        self.name.setMaxLength(32)
+        self.name.editingFinished.connect(self._save_name)
+        self.name_step.content.addWidget(self.name)
+
+        self.webhook_step = Step(2, "Discord channel link")
+        self.webhook_step.content.addWidget(label(
+            "Paste the webhook URL your group shares. In Discord, open the channel's Edit Channel, "
+            "then Integrations, then Webhooks. Keep it within your group, because anyone who has it "
+            "can post to the channel.",
+            "muted", wrap=True,
+        ))
+        row = QHBoxLayout()
+        self.webhook = QLineEdit(settings["webhook_url"])
+        self.webhook.setPlaceholderText("https://discord.com/api/webhooks/...")
+        self.webhook.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
+        self.webhook.editingFinished.connect(self._save_webhook)
+        row.addWidget(self.webhook, 1)
+        self.test = QPushButton("Check link")
+        self.test.clicked.connect(self._test_webhook)
+        row.addWidget(self.test)
+        self.webhook_step.content.addLayout(row)
+        self.webhook_status = label("", "small", wrap=True)
+        self.webhook_status.hide()
+        self.webhook_step.content.addWidget(self.webhook_status)
+        self.webhook_result.connect(self._show_webhook_result)
+
+        self.key_step = Step(3, "Interact key")
+        self.key_step.content.addWidget(label(
+            "Click the button, then press the key or scroll the wheel the way you open chests in Fortnite.",
+            "muted", wrap=True,
+        ))
+        self.capture = KeyCapture()
+        self.capture.set_key(settings["interact_keys"][0])
+        self.capture.captured.connect(self._save_key)
+        self.key_step.content.addWidget(self.capture)
+
+        self.prompt_step = Step(4, "Chest prompt", last=True)
+        self.prompt_step.content.addWidget(label(
+            "A small picture of the word SEARCH, so the app recognizes the prompt. Set it up again if "
+            "you change your resolution or HUD scale.",
+            "muted", wrap=True,
+        ))
+        self.gallery = QHBoxLayout()
+        self.gallery.setSpacing(10)
+        self.prompt_step.content.addLayout(self.gallery)
+        add_row = QHBoxLayout()
+        self.add_prompt = QPushButton("Set up prompt")
+        self.add_prompt.setObjectName("primary")
+        self.add_prompt.clicked.connect(self._calibrate)
+        add_row.addWidget(self.add_prompt)
+        add_row.addStretch(1)
+        self.prompt_step.content.addLayout(add_row)
+        self.prompt_step.content.addSpacing(8)
+        self.prompt_step.content.addWidget(label("Live match", "subheading"))
+        self.prompt_step.content.addWidget(label(
+            "Look at a chest in Fortnite. The bar should reach the marker. Drag the marker to change "
+            "how close a match is required.",
+            "muted", wrap=True,
+        ))
+        self.meter = MatchMeter(settings["match_threshold"])
+        self.meter.threshold_changed.connect(self._save_threshold)
+        self.prompt_step.content.addWidget(self.meter)
+        self.score_text = label("Not in game", "small")
+        self.prompt_step.content.addWidget(self.score_text)
+
+        self.steps = [self.name_step, self.webhook_step, self.key_step, self.prompt_step]
+        for step in self.steps:
+            step.opened.connect(self._open_step)
+            layout.addWidget(step)
+        layout.addStretch(1)
+        self.refresh_gallery()
+        self.refresh_steps()
+        self._open_step(next((s for s in self.steps if not s.done), self.prompt_step))
+
+    def _open_step(self, chosen: Step) -> None:
+        for step in self.steps:
+            step.set_open(step is chosen and not (step.is_open and step is chosen))
+
+    def refresh_steps(self) -> None:
+        settings = self.window_.settings
+        self.name_step.set_done(bool(settings["player_name"]), settings["player_name"])
+        self.webhook_step.set_done(bool(settings["webhook_url"]), "Linked")
+        self.key_step.set_done(True, key_label(settings["interact_keys"][0]))
+        count = len(list(self.window_.templates_dir.glob("*.png")))
+        self.prompt_step.set_done(count > 0, f"{count} saved")
+
+    def refresh_gallery(self) -> None:
+        while self.gallery.count():
+            item = self.gallery.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        paths = sorted(self.window_.templates_dir.glob("*.png"))
+        if not paths:
+            self.gallery.addWidget(label("No prompt saved yet.", "small"))
+        for path in paths:
+            box = QWidget()
+            holder = QVBoxLayout(box)
+            holder.setContentsMargins(0, 0, 0, 0)
+            holder.setSpacing(6)
+            thumb = QLabel()
+            thumb.setObjectName("promptThumb")
+            image = QPixmap(str(path))
+            if image.width() > 150 or image.height() > 60:
+                image = image.scaled(150, 60, Qt.AspectRatioMode.KeepAspectRatio)
+            thumb.setPixmap(image)
+            remove = QPushButton("Remove")
+            remove.clicked.connect(lambda _=False, p=path: self._remove(p))
+            holder.addWidget(thumb)
+            holder.addWidget(remove)
+            self.gallery.addWidget(box)
+        self.gallery.addStretch(1)
+
+    def _remove(self, path: Path) -> None:
+        path.unlink(missing_ok=True)
+        self.refresh_gallery()
+        self.refresh_steps()
+        self.window_.restart_engine()
+
+    def _calibrate(self) -> None:
+        dialog = PromptDialog(self, self.window_.templates_dir, self.window_.settings["search_area"])
+        if dialog.exec():
+            self.refresh_gallery()
+            self.refresh_steps()
+            self.window_.restart_engine()
+
+    def _save_name(self) -> None:
+        name = self.name.text().strip()
+        if name != self.window_.settings["player_name"]:
+            self.window_.settings.set(player_name=name)
+            self.refresh_steps()
+            self.window_.apply_identity()
+
+    def _save_webhook(self) -> None:
+        url = self.webhook.text().strip()
+        if url != self.window_.settings["webhook_url"]:
+            self.window_.settings.set(webhook_url=url)
+            self.refresh_steps()
+            self.window_.apply_identity()
+            if url:
+                self._test_webhook()
+
+    def _save_key(self, name: str) -> None:
+        self.window_.settings.set(interact_keys=[name])
+        self.refresh_steps()
+        self.window_.restart_engine()
+
+    def _save_threshold(self, value: float) -> None:
+        if value != self.window_.settings["match_threshold"]:
+            self.window_.settings.set(match_threshold=value)
+            self.window_.restart_engine()
+
+    def _test_webhook(self) -> None:
+        url = self.webhook.text().strip()
+        self.test.setEnabled(False)
+        self.webhook_status.setText("Checking the link.")
+        self.webhook_status.show()
+        threading.Thread(
+            target=lambda: self.webhook_result.emit(*check_webhook(url)), daemon=True
+        ).start()
+
+    def _show_webhook_result(self, ok: bool, message: str) -> None:
+        self.test.setEnabled(True)
+        color = MINT if ok else EMBER
+        self.webhook_status.setText(f'<span style="color:{color}">{message}</span>')
+
+    def show_score(self, score: float) -> None:
+        self.meter.set_score(score)
+        seen = score >= self.window_.settings["match_threshold"]
+        self.score_text.setText(f"Match {score:.2f}, needs {self.meter.threshold:.2f}" + (". Prompt seen." if seen else ""))
+
+    def clear_score(self, text: str) -> None:
+        self.meter.set_score(0)
+        self.score_text.setText(text)
+
+
+class GroupPage(QWidget):
+    def __init__(self, window: "MainWindow"):
+        super().__init__()
+        self.window_ = window
+        settings = window.settings
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll, layout = scroll_page()
+        outer.addWidget(scroll)
+
+        header = QHBoxLayout()
+        header.addWidget(label("Group", "heading"))
+        header.addStretch(1)
+        self.group_total = label("", "muted")
+        header.addWidget(self.group_total, 0, Qt.AlignmentFlag.AlignBottom)
+        layout.addLayout(header)
+
+        self.board = QVBoxLayout()
+        self.board.setSpacing(2)
+        layout.addLayout(self.board)
+        layout.addSpacing(14)
+
+        bot_row = QHBoxLayout()
+        self.disclosure = QPushButton()
+        self.disclosure.setObjectName("disclosure")
+        self.disclosure.clicked.connect(lambda: self._show_connection(not self.connection.isVisible()))
+        bot_row.addWidget(self.disclosure)
+        bot_row.addStretch(1)
+        self.pill = Pill()
+        self.pill.show_state(LILAC, "Bot off")
+        bot_row.addWidget(self.pill)
+        layout.addLayout(bot_row)
+
+        self.connection = QWidget()
+        section = QVBoxLayout(self.connection)
+        section.setContentsMargins(0, 4, 0, 0)
+        section.setSpacing(8)
+        section.addWidget(label(
+            "One person in your group runs the bot, and everyone else can skip this. It keeps the "
+            "leaderboard and answers /chests and /leaderboard in Discord. If it's off, it catches up "
+            "the next time it starts.",
+            "muted", wrap=True,
+        ))
+        section.addWidget(label("Bot token", "small"))
+        self.token = QLineEdit(settings["bot_token"])
+        self.token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.token.setPlaceholderText("From the Discord Developer Portal, on the Bot page")
+        self.token.editingFinished.connect(self._save)
+        section.addWidget(self.token)
+        section.addWidget(label("Channel ID", "small"))
+        self.channel = QLineEdit(settings["channel_id"])
+        self.channel.setPlaceholderText("Right-click the channel in Discord, then Copy Channel ID")
+        self.channel.editingFinished.connect(self._save)
+        section.addWidget(self.channel)
+        self.auto = QCheckBox("Start the bot when the app opens")
+        self.auto.setChecked(settings["run_bot"])
+        self.auto.toggled.connect(lambda on: settings.set(run_bot=on))
+        section.addWidget(self.auto)
+        row = QHBoxLayout()
+        self.toggle = QPushButton("Start bot")
+        self.toggle.setObjectName("primary")
+        self.toggle.clicked.connect(window.toggle_bot)
+        row.addWidget(self.toggle)
+        portal = QPushButton("Open Developer Portal")
+        portal.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl("https://discord.com/developers/applications"))
+        )
+        row.addWidget(portal)
+        row.addStretch(1)
+        section.addLayout(row)
+        self.message = label("", "small", wrap=True)
+        self.message.setTextFormat(Qt.TextFormat.PlainText)
+        section.addWidget(self.message)
+        layout.addWidget(self.connection)
+        layout.addStretch(1)
+        self._show_connection(not settings["bot_token"])
+
+    def _show_connection(self, visible: bool) -> None:
+        self.connection.setVisible(visible)
+        self.disclosure.setText(("Hide" if visible else "Show") + " bot connection")
+
+    def _save(self) -> None:
+        self.window_.settings.set(bot_token=self.token.text().strip(), channel_id=self.channel.text().strip())
+
+    def show_leaderboard(self, rows: list[tuple[str, int]], total: int) -> None:
+        while self.board.count():
+            item = self.board.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        if not rows:
+            self.board.addWidget(label(
+                "No chests on the leaderboard yet. The player running the bot sees totals here once "
+                "anyone opens a chest.", "muted", wrap=True,
+            ))
+        me = self.window_.settings["player_name"].lower()
+        top = rows[0][1] if rows else 0
+        for rank, (name, count) in enumerate(rows, 1):
+            self.board.addWidget(LeaderRow(rank, name, count, top, name.lower() == me))
+        self.group_total.setText(f"{total:,} chests between you" if rows else "")
+
+
+class MainWindow(QMainWindow):
+    chest = Signal(int, str)
+    attempt = Signal(str)
+    engine_state = Signal(str)
+    match_score = Signal(float)
+    delivery = Signal(bool, str)
+    bot_status = Signal(str, str)
+
+    def __init__(self, folder: Path, icon: QIcon):
+        super().__init__()
+        self.folder = folder
+        self.templates_dir = folder / "templates"
+        self.settings = Settings(folder)
+        self.stats = Stats(folder)
+        self.engine: WatchEngine | None = None
+        self.bot: BotRunner | None = None
+        self.paused = False
+        self.delivery_ok = True
+        self.current_state = "off"
+        self.leaderboard_seen = None
+
+        self.setWindowTitle("Chest Tracker")
+        self.setWindowIcon(icon)
+        self.resize(1040, 720)
+        self.setMinimumSize(800, 600)
+        self.setStyleSheet(STYLE)
+
+        root = QWidget()
+        self.setCentralWidget(root)
+        rows = QVBoxLayout(root)
+        rows.setContentsMargins(0, 0, 0, 0)
+        rows.setSpacing(0)
+
+        topbar = QFrame()
+        topbar.setObjectName("topbar")
+        top = QHBoxLayout(topbar)
+        top.setContentsMargins(20, 0, 20, 0)
+        top.setSpacing(4)
+        logo = QLabel()
+        logo.setPixmap(icon.pixmap(28, 28))
+        top.addWidget(logo)
+        top.addSpacing(6)
+        top.addWidget(label("Chest Tracker", "brand"))
+        top.addSpacing(26)
+
+        self.stack = QStackedWidget()
+        self.tracker = TrackerPage(self)
+        self.setup = SetupPage(self)
+        self.group = GroupPage(self)
+        self.nav = QButtonGroup(self)
+        for index, (name, page) in enumerate(
+            (("Tracker", self.tracker), ("Setup", self.setup), ("Group", self.group))
+        ):
+            self.stack.addWidget(page)
+            button = QPushButton(name)
+            button.setObjectName("tab")
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.nav.addButton(button, index)
+            top.addWidget(button)
+        self.nav.idClicked.connect(self.stack.setCurrentIndex)
+        self.nav.button(0).setChecked(True)
+        top.addStretch(1)
+        self.pill = Pill()
+        top.addWidget(self.pill)
+        rows.addWidget(topbar)
+        rows.addWidget(self.stack, 1)
+
+        self.chest.connect(self.record_chest)
+        self.attempt.connect(self._on_attempt)
+        self.engine_state.connect(self.set_state)
+        self.match_score.connect(self.setup.show_score)
+        self.delivery.connect(self._on_delivery)
+        self.bot_status.connect(self._on_bot_status)
+
+        self.sender = Sender(
+            self.settings["webhook_url"], self.settings["player_name"],
+            folder / "pending.json", self.delivery.emit,
+        )
+        threading.Thread(target=self.sender.run_forever, daemon=True).start()
+        if self.sender.pending:
+            self.sender.wake.set()
+
+        self._build_tray(icon)
+        self._show_stats()
+        self.tracker.stage.set_count(self.stats.total)
+        self.restart_engine()
+        if self.settings["run_bot"] and self.bot_ready():
+            self.toggle_bot()
+
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.timeout.connect(self._refresh)
+        self.refresh_timer.start(5000)
+        self._refresh()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        dark_title_bar(self)
+
+    def _build_tray(self, icon: QIcon) -> None:
+        self.tray = QSystemTrayIcon(icon, self)
+        menu = QMenu()
+        show = QAction("Open Chest Tracker", menu)
+        show.triggered.connect(self.bring_to_front)
+        menu.addAction(show)
+        self.tray_pause = QAction("Pause", menu)
+        self.tray_pause.triggered.connect(self.toggle_pause)
+        menu.addAction(self.tray_pause)
+        menu.addSeparator()
+        leave = QAction("Quit", menu)
+        leave.triggered.connect(self.quit_app)
+        menu.addAction(leave)
+        self.tray_menu = menu
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(
+            lambda reason: self.bring_to_front()
+            if reason == QSystemTrayIcon.ActivationReason.Trigger else None
+        )
+        self.tray.show()
+
+    def _show_stats(self) -> None:
+        self.tracker.show_stats(self.stats)
+        self.tray.setToolTip(f"Chest Tracker: {self.stats.total:,} chests")
+
+    def go_to(self, index: int) -> None:
+        self.nav.button(index).setChecked(True)
+        self.stack.setCurrentIndex(index)
+
+    def bring_to_front(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def missing_setup(self) -> list[str]:
+        missing = []
+        if not self.settings["player_name"]:
+            missing.append("your name")
+        if not self.settings["webhook_url"]:
+            missing.append("the Discord channel link")
+        if not list(self.templates_dir.glob("*.png")):
+            missing.append("the chest prompt")
+        return missing
+
+    def restart_engine(self) -> None:
+        if self.engine:
+            self.engine.stop()
+            self.engine.join(2)
+            self.engine = None
+        self._update_notice()
+        if self.missing_setup():
+            self.set_state("setup")
+            return
+        if self.paused:
+            self.set_state("off")
+            return
+        matcher = PromptMatcher.from_folder(self.templates_dir, self.settings["match_threshold"])
+        try:
+            interact = interact_check(self.settings["interact_keys"])
+        except (ValueError, RuntimeError) as error:
+            log.error("Interact key problem: %s", error)
+            self.tracker.log(f"Interact key problem: {error}", EMBER)
+            self.set_state("setup")
+            return
+        self.engine = WatchEngine(
+            matcher, interact, self.settings["search_area"],
+            self.chest.emit, self.engine_state.emit, self.match_score.emit, self.attempt.emit,
+        )
+        self.engine.start()
+
+    def apply_identity(self) -> None:
+        self.sender.url = self.settings["webhook_url"]
+        self.sender.player = self.settings["player_name"]
+        self.sender.wake.set()
+        self.restart_engine()
+
+    def _update_notice(self) -> None:
+        missing = self.missing_setup()
+        self.tracker.notice_frame.setVisible(bool(missing))
+        if missing:
+            needed = missing[0] if len(missing) == 1 else f"{', '.join(missing[:-1])} and {missing[-1]}"
+            self.tracker.notice.setText(f"To start counting, add {needed}.")
+
+    def set_state(self, state: str) -> None:
+        self.current_state = state
+        color, text = STATES[state]
+        self.pill.show_state(color, text)
+        if state == "black":
+            self.tracker.log("The game looks blank to the app. Set Fortnite to Windowed Fullscreen, and try turning HDR off.", EMBER)
+        if state != "watching":
+            self.setup.clear_score("Not in game" if state == "waiting" else text)
+
+    def _on_attempt(self, event: str) -> None:
+        if event == PENDING:
+            self.tracker.stage.show_pending()
+        elif event == CANCELLED:
+            self.tracker.stage.show_cancelled()
+            self.tracker.log("Search cancelled, not counted", LILAC)
+
+    def record_chest(self, amount: int, source: str) -> None:
+        self.stats.add(amount)
+        self.sender.add(amount)
+        self._show_stats()
+        if source == "detected":
+            self.tracker.stage.show_opened(self.stats.total)
+            self.tracker.log("Chest opened", GOLD)
+        else:
+            self.tracker.stage.set_count(self.stats.total)
+            self.tracker.log("Removed a chest", LILAC)
+
+    def toggle_pause(self) -> None:
+        self.paused = not self.paused
+        text = "Resume" if self.paused else "Pause"
+        self.tracker.pause.setText(text)
+        self.tray_pause.setText(text)
+        self.restart_engine()
+
+    def _on_delivery(self, ok: bool, message: str) -> None:
+        if ok != self.delivery_ok:
+            if ok:
+                self.tracker.log("Back online. Your chests were sent.", MINT)
+            else:
+                self.tracker.log(message, EMBER)
+        self.delivery_ok = ok
+
+    def bot_ready(self) -> bool:
+        return bool(self.settings["bot_token"]) and self.settings["channel_id"].isdigit()
+
+    def toggle_bot(self) -> None:
+        self.group._save()
+        if self.bot:
+            self.group.toggle.setEnabled(False)
+            threading.Thread(target=self.bot.stop, daemon=True).start()
+            return
+        if not self.bot_ready():
+            self._on_bot_status("error", "Enter the bot token and a numeric channel ID first.")
+            return
+        self.bot = BotRunner(
+            self.settings["bot_token"], int(self.settings["channel_id"]),
+            self.folder / "chests.db", self.bot_status.emit,
+        )
+        self.group.toggle.setText("Stop bot")
+        self.bot.start()
+
+    def _on_bot_status(self, status: str, message: str) -> None:
+        page = self.group
+        color = {"running": MINT, "starting": GOLD, "problem": EMBER, "error": EMBER}.get(status, LILAC)
+        text = {"running": "Bot online", "starting": "Bot connecting", "problem": "Bot problem", "error": "Bot problem"}.get(status, "Bot off")
+        page.pill.show_state(color, text)
+        page.message.setText(message)
+        if status in ("stopped", "error"):  # the bot's thread has finished
+            self.bot = None
+        if status in ("problem", "error"):
+            page._show_connection(True)
+        page.toggle.setEnabled(True)
+        page.toggle.setText("Stop bot" if self.bot else "Start bot")
+        self._refresh()
+
+    def _refresh(self) -> None:
+        self.stats.roll_over()
+        self._show_stats()
+        path = self.folder / "chests.db"
+        rows, total = [], 0
+        if path.exists():
+            store = Store.read_only(path)
+            try:
+                rows, total = store.leaderboard(), store.total()
+            except sqlite3.Error:  # the bot is creating the database right now
+                pass
+            finally:
+                store.db.close()
+        if (rows, total) != self.leaderboard_seen:  # rebuild only when something changed
+            self.leaderboard_seen = (rows, total)
+            self.group.show_leaderboard(rows, total)
+
+    def closeEvent(self, event) -> None:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            event.accept()
+            self.quit_app()
+            return
+        event.ignore()
+        self.hide()
+        if not self.settings["tray_notice_shown"]:
+            self.settings.set(tray_notice_shown=True)
+            self.tray.showMessage(
+                "Chest Tracker is still counting",
+                "It's in the system tray. Right-click the icon and select Quit to exit.",
+                self.windowIcon(), 5000,
+            )
+
+    def quit_app(self) -> None:
+        self._shut_down()
+        QApplication.quit()
+
+    def _shut_down(self) -> None:
+        self.refresh_timer.stop()
+        if self.engine:
+            self.engine.stop()
+            self.engine.join(2)
+        if self.bot:
+            self.bot.stop()
+        self.tray.hide()
+        deadline = time.monotonic() + 2
+        while self.sender.pending and time.monotonic() < deadline:
+            time.sleep(0.1)
