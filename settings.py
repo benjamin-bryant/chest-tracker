@@ -12,12 +12,20 @@ DEFAULTS = {
     "player_name": "",
     "webhook_url": "",
     "interact_keys": ["E"],
+    "remove_key": "BACKSPACE",
     "match_threshold": 0.8,
     "search_area": [0.15, 0.15, 0.85, 0.95],
     "bot_token": "",
     "channel_id": "",
     "run_bot": False,
     "tray_notice_shown": False,
+    "overlay_enabled": False,
+    "overlay_position": [0.76, 0.06],
+    "fortnite_api_key": "",
+    "fortnite_account_name": "",
+    "fortnite_account_type": "epic",
+    "fortnite_stats_window": "lifetime",
+    "fortnite_stats_cache": {},
 }
 
 

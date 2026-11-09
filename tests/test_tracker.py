@@ -22,6 +22,8 @@ from protocol import format_delta, parse_delta
 from store import Store
 from settings import Settings, Stats, import_old_setup
 from watcher import Sender, WatchEngine, best_monitor, key_code, selection_too_big
+from widgets import MatchMeter
+import watcher
 
 
 def play(frames, step=0.08):
@@ -94,6 +96,58 @@ def test_search_reports_pending_then_opened():
     assert [e for e in events if e] == [PENDING, OPENED]
 
 
+def test_quick_next_chest_at_a_new_prompt_position_counts_both():
+    detector = ChestDetector()
+    chest_a = (0.40, 0.50)
+    chest_b = (0.68, 0.42)
+    events = []
+
+    def update(now, visible, key=False, location=None):
+        event = detector.update(now, visible, key, prompt_location=location)
+        if event:
+            events.append(event)
+        return event
+
+    update(0.00, True, location=chest_a)
+    update(0.10, True, key=True, location=chest_a)
+    update(0.20, True, location=chest_a)
+    update(0.30, False)
+    update(0.80, False)
+    update(1.20, True, location=chest_b)
+    assert update(1.25, True, key=True, location=chest_b) == OPENED
+    assert detector.armed  # the same press has started the second chest attempt
+
+    update(1.30, True, location=chest_b)
+    update(1.40, False)
+    update(1.85, False)
+    assert update(3.31, False) == OPENED
+    assert events == [PENDING, OPENED, PENDING, OPENED]
+
+
+def test_prompt_returning_at_same_position_still_cancels():
+    detector = ChestDetector()
+    location = (0.45, 0.55)
+    detector.update(0.0, True, False, prompt_location=location)
+    detector.update(0.1, True, True, prompt_location=location)
+    detector.update(0.2, False, False)
+    assert detector.update(0.8, True, False, prompt_location=location) == CANCELLED
+
+
+def test_new_prompt_position_remains_eligible_until_interact():
+    detector = ChestDetector()
+    chest_a = (0.40, 0.50)
+    chest_b = (0.68, 0.42)
+    detector.update(0.0, True, False, prompt_location=chest_a)
+    detector.update(0.1, True, True, prompt_location=chest_a)
+    detector.update(0.2, True, False, prompt_location=chest_a)
+    detector.update(0.3, False, False)
+    detector.update(0.8, False, False)
+    detector.update(1.2, True, False, prompt_location=chest_b)
+    detector.update(1.8, True, False, prompt_location=chest_b)
+    assert detector.update(1.9, True, True, prompt_location=chest_b) == OPENED
+    assert detector.armed
+
+
 def test_two_chests_in_a_row_count_twice():
     one = PROMPT + [(True, True)] + GONE
     assert play(one + one) == 2
@@ -151,6 +205,9 @@ def test_matcher_finds_prompt_only_when_present():
     rng = np.random.default_rng(1)
     assert matcher.is_visible(make_scene(rng, True, template))
     assert not matcher.is_visible(make_scene(rng, False, template))
+    score, location = matcher.best_match(make_scene(rng, True, template))
+    assert score >= 0.8
+    assert location == pytest.approx((0.507, 0.5875), abs=0.01)
 
 
 def test_matcher_rejects_a_different_word():
@@ -169,6 +226,13 @@ def test_matcher_with_blank_frame_and_template_larger_than_frame():
     matcher = PromptMatcher([template], threshold=0.8)
     assert not matcher.is_visible(np.zeros((400, 700), dtype=np.uint8))
     assert not matcher.is_visible(np.zeros((10, 10), dtype=np.uint8))
+
+
+def test_match_meter_maps_the_full_sensitivity_range():
+    assert MatchMeter._threshold_at_fraction(-1) == MatchMeter.MIN_THRESHOLD
+    assert MatchMeter._threshold_at_fraction(2) == MatchMeter.MAX_THRESHOLD
+    assert MatchMeter._fraction_at_threshold(MatchMeter.MIN_THRESHOLD) == 0
+    assert MatchMeter._fraction_at_threshold(MatchMeter.MAX_THRESHOLD) == 1
 
 
 def test_protocol_round_trip_and_rejects_other_text():
@@ -221,7 +285,10 @@ def test_reset_does_not_move_the_catch_up_position_back(store):
 
 
 @pytest.mark.parametrize(
-    "name, code", [("E", 0x45), ("e", 0x45), ("5", 0x35), ("F9", 0x78), ("mouse4", 0x05)]
+    "name, code", [
+        ("E", 0x45), ("e", 0x45), ("5", 0x35), ("F9", 0x78),
+        ("mouse4", 0x05), ("Backspace", 0x08), ("F10", 0x79),
+    ]
 )
 def test_key_names(name, code):
     assert key_code(name) == code
@@ -317,6 +384,9 @@ def test_settings_save_and_keep_defaults(tmp_path):
     settings = Settings(tmp_path)
     assert settings["player_name"] == "Sam"
     assert settings["interact_keys"] == ["E"]
+    assert settings["remove_key"] == "BACKSPACE"
+    assert settings["overlay_enabled"] is False
+    assert settings["overlay_position"] == [0.76, 0.06]
 
 
 def make_old_setup(folder):
@@ -487,6 +557,53 @@ def test_engine_ignores_walking_past_and_outside_the_game(quick_confirm):
     )
     assert chests == []
     assert states == ["waiting"]
+
+
+def test_undo_key_press_outside_fortnite_is_not_applied_after_focus_returns(monkeypatch):
+    key_events = iter([True, False, False, False, False, False])
+
+    class ScriptedKeyEdge:
+        def __init__(self, code):
+            self.code = code
+
+        def pressed(self):
+            return next(key_events, False)
+
+    monkeypatch.setattr(watcher, "KeyEdge", ScriptedKeyEdge)
+    template, _, frame, _ = prompt_scenes()
+
+    class Capture(FakeCapture):
+        frames = [frame]
+
+    focus_events = iter([False, True, True, True])
+    chests, _, _ = run_engine(
+        PromptMatcher([template], 0.8), Capture, lambda: False, 0.4,
+        focused=lambda: next(focus_events, True),
+    )
+    assert chests == []
+
+
+def test_undo_key_press_in_fortnite_removes_one_chest(monkeypatch):
+    key_events = iter([True, False, False, False, False])
+
+    class ScriptedKeyEdge:
+        def __init__(self, code):
+            self.code = code
+
+        def pressed(self):
+            return next(key_events, False)
+
+    monkeypatch.setattr(watcher, "KeyEdge", ScriptedKeyEdge)
+    template, _, frame, _ = prompt_scenes()
+
+    class Capture(FakeCapture):
+        frames = [frame]
+
+    chests, _, _ = run_engine(
+        PromptMatcher([template], 0.8), Capture, lambda: False, 0.15,
+        focused=lambda: True,
+    )
+    assert chests == [(-1, "hotkey")]
 
 
 def test_engine_survives_capture_failures():

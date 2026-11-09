@@ -1,0 +1,141 @@
+"""Small, click-through chest count shown over Fortnite."""
+
+import ctypes
+import random
+
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen
+from PySide6.QtWidgets import QWidget
+
+from widgets import BONE, DUSK, GOLD, LINE, MINT
+
+
+class ChestOverlay(QWidget):
+    """A compact count badge that can be dragged during setup and ignored in game."""
+
+    position_saved = Signal(object)
+
+    def __init__(self):
+        super().__init__(None)
+        self.setWindowFlags(
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setFixedSize(220, 76)
+        self.count = 0
+        self.positioning = False
+        self.click_through = False
+        self._drag_offset: QPoint | None = None
+        self._particles: list[list[float | QColor]] = []
+        self._flash = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self._tick)
+
+    def set_count(self, count: int, celebrate: bool = False) -> None:
+        self.count = count
+        if celebrate:
+            colors = [QColor(GOLD), QColor(MINT), QColor(BONE), QColor("#B8BBC0")]
+            for _ in range(24):
+                self._particles.append([
+                    random.uniform(20, self.width() - 20),
+                    random.uniform(20, 46),
+                    random.uniform(-2.8, 2.8),
+                    random.uniform(-5.4, -1.0),
+                    1.0,
+                    random.choice(colors),
+                ])
+            self._flash = 1.0
+            self._timer.start()
+        self.update()
+
+    def set_click_through(self, enabled: bool) -> None:
+        """Use Windows extended styles so mouse input passes through the overlay."""
+        if enabled == self.click_through:
+            return
+        self.click_through = enabled
+        hwnd = int(self.winId())
+        user32 = ctypes.windll.user32
+        get_style = user32.GetWindowLongW
+        set_style = user32.SetWindowLongW
+        get_style.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        get_style.restype = ctypes.c_long
+        set_style.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
+        user32.SetWindowPos.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, ctypes.c_uint,
+        ]
+        style = get_style(hwnd, -20)  # GWL_EXSTYLE
+        transparent = 0x00000020  # WS_EX_TRANSPARENT
+        style = style | transparent if enabled else style & ~transparent
+        set_style(hwnd, -20, style)
+        user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x0037)  # refresh style, without moving or activating
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if self.positioning and event.button() == Qt.MouseButton.LeftButton:
+            self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+            return
+        event.ignore()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self.positioning and self._drag_offset is not None:
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+            event.accept()
+            return
+        event.ignore()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self.positioning and event.button() == Qt.MouseButton.LeftButton and self._drag_offset is not None:
+            self._drag_offset = None
+            self.position_saved.emit(self.pos())
+            event.accept()
+            return
+        event.ignore()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        background = QColor(DUSK)
+        background.setAlpha(232)
+        painter.setPen(QPen(QColor(LINE), 1.5))
+        painter.setBrush(background)
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 13, 13)
+
+        painter.setPen(QColor(MINT if self.positioning else GOLD))
+        small = QFont("Segoe UI", 9, QFont.Weight.DemiBold)
+        painter.setFont(small)
+        painter.drawText(14, 22, "DRAG TO POSITION" if self.positioning else "CHESTS OPENED")
+
+        painter.setPen(QColor(BONE))
+        large = QFont("Bahnschrift SemiBold Condensed", 27, QFont.Weight.Bold)
+        painter.setFont(large)
+        painter.drawText(14, 59, f"{self.count:,}")
+
+        if self._flash > 0:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(244, 180, 42, int(self._flash * 70)))
+            painter.drawRoundedRect(self.rect().adjusted(2, 2, -2, -2), 12, 12)
+        for x, y, _vx, _vy, life, color in self._particles:
+            painter.setPen(Qt.PenStyle.NoPen)
+            particle = QColor(color)
+            particle.setAlphaF(max(0.0, float(life)))
+            painter.setBrush(particle)
+            painter.drawEllipse(int(x), int(y), 5, 5)
+        painter.end()
+
+    def _tick(self) -> None:
+        for particle in self._particles:
+            particle[0] = float(particle[0]) + float(particle[2])
+            particle[1] = float(particle[1]) + float(particle[3])
+            particle[3] = float(particle[3]) + 0.22
+            particle[4] = float(particle[4]) - 0.025
+        self._particles = [p for p in self._particles if float(p[4]) > 0]
+        self._flash = max(0.0, self._flash - 0.045)
+        if not self._particles and self._flash == 0:
+            self._timer.stop()
+        self.update()

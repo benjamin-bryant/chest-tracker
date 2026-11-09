@@ -7,19 +7,19 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
-    QBrush, QColor, QFont, QKeyEvent, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPen,
+    QBrush, QColor, QFont, QFontMetricsF, QKeyEvent, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPen,
     QRadialGradient,
 )
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-NIGHT = "#1B1226"
-DUSK = "#2A1C3A"
-LINE = "#463359"
-GOLD = "#F4B42A"
-EMBER = "#E8663C"
-BONE = "#F6EEDF"
-LILAC = "#B3A4C4"
-MINT = "#62DDB0"
+NIGHT = "#101112"
+DUSK = "#202123"
+LINE = "#3B3C3F"
+GOLD = "#D6AE4F"
+EMBER = "#D95F45"
+BONE = "#F2F2EE"
+LILAC = "#A5A7AB"
+MINT = "#69C7A0"
 
 
 def display_font(size: float, weight: str = "SemiBold") -> QFont:
@@ -170,8 +170,8 @@ class ChestStage(QWidget):
         self.update()
 
     def _chest_box(self) -> tuple[float, float, float]:
-        width = min(self.width() * 0.5, self.height() * 0.5)
-        return self.width() / 2, self.height() * 0.545, width
+        width = min(self.width() * 0.49, self.height() * 0.49)
+        return self.width() * 0.73, self.height() * 0.83, width
 
     def _body_top(self) -> float:
         _, bottom, width = self._chest_box()
@@ -192,23 +192,32 @@ class ChestStage(QWidget):
         self._paint_light(p, center, width, openness)
         self._paint_chest(p, center, bottom, width, openness)
         self._paint_coins(p)
-        self._paint_count(p, bottom, width)
+        self._paint_count(p)
         p.end()
 
     def _paint_backdrop(self, p: QPainter) -> None:
         p.fillRect(self.rect(), QColor(NIGHT))
         center, bottom, width = self._chest_box()
         glow = QRadialGradient(QPointF(center, bottom - width * 0.2), width * 1.25)
-        strength = 0.34 + 0.4 * self.flash
-        color = QColor("#5B3A80")
-        color.setAlphaF(min(1.0, strength + 0.2))
+        strength = 0.08 + 0.24 * self.flash
+        color = QColor(GOLD)
+        color.setAlphaF(strength)
         glow.setColorAt(0, color)
-        glow.setColorAt(1, QColor(27, 18, 38, 0))
+        glow.setColorAt(1, QColor(16, 17, 18, 0))
+        card = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        shape = QPainterPath()
+        shape.addRoundedRect(card, 18, 18)
+        p.setPen(QPen(QColor(LINE), 1))
+        p.setBrush(QColor(DUSK))
+        p.drawPath(shape)
+        p.save()
+        p.setClipPath(shape)
         p.fillRect(self.rect(), QBrush(glow))
+        p.restore()
 
         floor = QRadialGradient(QPointF(center, bottom + width * 0.015), width * 0.68)
-        floor.setColorAt(0, QColor(8, 3, 14, 170))
-        floor.setColorAt(1, QColor(8, 3, 14, 0))
+        floor.setColorAt(0, QColor(8, 8, 9, 170))
+        floor.setColorAt(1, QColor(8, 8, 9, 0))
         p.save()
         p.translate(center, bottom + width * 0.015)
         p.scale(1, 0.13)
@@ -331,21 +340,32 @@ class ChestStage(QWidget):
             p.drawEllipse(QPointF(0, 0), max(1.5, coin.size * flat), coin.size)
             p.restore()
 
-    def _paint_count(self, p: QPainter, bottom: float, width: float) -> None:
-        room = self.height() - bottom
-        size = min(room * 0.56, self.width() * 0.2) * (1 + 0.14 * self.pop)
-        count_rect = QRectF(0, bottom + room * 0.08, self.width(), room * 0.62)
+    def _paint_count(self, p: QPainter) -> None:
+        text = f"{self.count:,}"
+        size = min(self.height() * 0.13, self.width() * 0.11) * (1 + 0.14 * self.pop)
+        p.setPen(QColor(LILAC))
+        p.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
+        p.drawText(
+            QRectF(self.width() * 0.07, self.height() * 0.28, self.width() * 0.43, 22),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            "ALL-TIME CHESTS",
+        )
+        count_rect = QRectF(self.width() * 0.065, self.height() * 0.32, self.width() * 0.40, self.height() * 0.23)
+        count_font = display_font(size)
+        while size > 20 and QFontMetricsF(count_font).horizontalAdvance(text) > count_rect.width():
+            size -= 1
+            count_font = display_font(size)
         p.setPen(QColor(GOLD))
-        p.setFont(display_font(size))
-        p.drawText(count_rect, Qt.AlignmentFlag.AlignCenter, f"{self.count:,}")
+        p.setFont(count_font)
+        p.drawText(count_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
         p.setPen(QColor(LILAC))
         caption = QFont("Segoe UI")
-        caption.setPixelSize(15)
+        caption.setPixelSize(14)
         p.setFont(caption)
         text = "Checking this chest..." if self.searching else ("chest opened" if self.count == 1 else "chests opened")
         p.drawText(
-            QRectF(0, bottom + room * 0.71, self.width(), room * 0.2),
-            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, text,
+            QRectF(self.width() * 0.07, self.height() * 0.55, self.width() * 0.43, 30),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text,
         )
 
 
@@ -392,28 +412,46 @@ class MatchMeter(QWidget):
     """Shows the live prompt match. Drag the marker, or use arrow keys, to set the required match."""
 
     threshold_changed = Signal(float)
+    MIN_THRESHOLD = 0.5
+    MAX_THRESHOLD = 0.99
 
     def __init__(self, threshold: float):
         super().__init__()
         self.score = 0.0
-        self.threshold = threshold
-        self.setFixedHeight(30)
+        self.threshold = min(self.MAX_THRESHOLD, max(self.MIN_THRESHOLD, threshold))
+        self.setFixedHeight(48)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCursor(Qt.CursorShape.SizeHorCursor)
-        self.setToolTip("Required match. Drag to change it.")
+        self.setToolTip(
+            "Required match: 0.50 is more permissive and may cause false matches; "
+            "0.99 is stricter and may miss prompts. Drag to change it."
+        )
         self.setAccessibleName("Required prompt match")
+        self.setAccessibleDescription(
+            "The range goes from 0.50, more permissive, to 0.99, stricter."
+        )
 
     def set_score(self, score: float) -> None:
         self.score = max(0.0, min(1.0, score))
         self.update()
 
     def _track(self) -> QRectF:
-        return QRectF(8, 12, self.width() - 16, 8)
+        return QRectF(8, 8, self.width() - 16, 9)
+
+    @classmethod
+    def _threshold_at_fraction(cls, fraction: float) -> float:
+        fraction = min(1.0, max(0.0, fraction))
+        value = cls.MIN_THRESHOLD + fraction * (cls.MAX_THRESHOLD - cls.MIN_THRESHOLD)
+        return round(value, 2)
+
+    @classmethod
+    def _fraction_at_threshold(cls, threshold: float) -> float:
+        return (threshold - cls.MIN_THRESHOLD) / (cls.MAX_THRESHOLD - cls.MIN_THRESHOLD)
 
     def _set_threshold_at(self, x: float) -> None:
         track = self._track()
-        value = (x - track.left()) / track.width()
-        self.threshold = round(min(0.99, max(0.5, value)), 2)
+        fraction = (x - track.left()) / track.width()
+        self.threshold = self._threshold_at_fraction(fraction)
         self.update()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -430,7 +468,9 @@ class MatchMeter(QWidget):
         if step is None:
             super().keyPressEvent(event)
             return
-        self.threshold = round(min(0.99, max(0.5, self.threshold + step)), 2)
+        self.threshold = round(
+            min(self.MAX_THRESHOLD, max(self.MIN_THRESHOLD, self.threshold + step)), 2
+        )
         self.threshold_changed.emit(self.threshold)
         self.update()
 
@@ -438,23 +478,45 @@ class MatchMeter(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         track = self._track()
+        gradient = QLinearGradient(track.topLeft(), track.topRight())
+        gradient.setColorAt(0.0, QColor(EMBER))
+        gradient.setColorAt(0.5, QColor(GOLD))
+        gradient.setColorAt(1.0, QColor(MINT))
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(NIGHT))
+        p.setBrush(QBrush(gradient))
         p.drawRoundedRect(track, 4, 4)
         if self.score > 0:
-            fill = QRectF(track.left(), track.top(), track.width() * self.score, track.height())
-            p.setBrush(QColor(MINT if self.score >= self.threshold else LILAC))
+            score_fraction = self._fraction_at_threshold(self.score)
+            score_fraction = min(1.0, max(0.0, score_fraction))
+            fill = QRectF(track.left(), track.top(), track.width() * score_fraction, track.height())
+            score_color = QColor(MINT if self.score >= self.threshold else LILAC)
+            score_color.setAlpha(110)
+            p.setBrush(score_color)
             p.drawRoundedRect(fill, 4, 4)
-        x = track.left() + track.width() * self.threshold
+        x = track.left() + track.width() * self._fraction_at_threshold(self.threshold)
         p.setPen(QPen(QColor(BONE if not self.hasFocus() else GOLD), 2))
         p.setBrush(QColor(GOLD))
-        marker = QPainterPath(QPointF(x, 22))
-        marker.lineTo(x - 6, 29)
-        marker.lineTo(x + 6, 29)
+        marker = QPainterPath(QPointF(x, 24))
+        marker.lineTo(x - 6, 31)
+        marker.lineTo(x + 6, 31)
         marker.closeSubpath()
-        p.drawLine(QPointF(x, 7), QPointF(x, 24))
+        p.drawLine(QPointF(x, 3), QPointF(x, 26))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawPath(marker)
+
+        p.setFont(QFont("Segoe UI", 9))
+        p.setPen(QColor(EMBER))
+        p.drawText(
+            QRectF(track.left(), 32, track.width() / 2, 15),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            f"{self.MIN_THRESHOLD:.2f}  More permissive",
+        )
+        p.setPen(QColor(MINT))
+        p.drawText(
+            QRectF(track.left() + track.width() / 2, 32, track.width() / 2, 15),
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            f"Stricter  {self.MAX_THRESHOLD:.2f}",
+        )
 
 
 class LeaderRow(QWidget):

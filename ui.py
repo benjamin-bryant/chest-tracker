@@ -12,22 +12,24 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
-    QAction, QColor, QDesktopServices, QIcon, QImage, QKeyEvent, QMouseEvent, QPainter, QPen, QPixmap,
+    QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QImage, QKeyEvent, QMouseEvent, QPainter, QPen, QPixmap,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
-    QSystemTrayIcon, QVBoxLayout, QWidget,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea,
+    QSizePolicy, QStackedWidget, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
 from bot import BotRunner
 from detection import CANCELLED, PENDING, PromptMatcher
+from fortnite_stats import FortniteStatsError, fetch_stats
+from overlay import ChestOverlay
 from settings import Settings, Stats
 from store import Store
 from watcher import (
     VK_F8, KeyEdge, Sender, WatchEngine, capture_focused_screen, check_webhook, fortnite_focused,
-    interact_check, selection_too_big,
+    foreground_window_bounds, interact_check, selection_too_big, key_code
 )
 from widgets import (
     BONE, DUSK, EMBER, GOLD, LILAC, LINE, MINT, NIGHT, ChestStage, LeaderRow, MatchMeter, StepBadge, TallyMarks,
@@ -50,24 +52,35 @@ QScrollArea {{ border: none; }}
 #subheading {{ font-family: "Bahnschrift SemiBold Condensed"; font-size: 21px; color: {BONE}; }}
 #muted {{ color: {LILAC}; }}
 #small {{ color: {LILAC}; font-size: 12px; }}
-#rail {{ background: {DUSK}; border-left: 1px solid {LINE}; }}
+#rail {{ background: transparent; }}
+#statCard, #activityCard {{ background: {DUSK}; border: 1px solid {LINE}; border-radius: 12px; }}
+#cardTitle {{ color: {LILAC}; font-size: 12px; font-weight: 700; letter-spacing: 1px; }}
+#sessionCount {{ font-family: "Bahnschrift SemiBold Condensed"; font-size: 34px; color: {BONE}; }}
+#activityList {{ background: transparent; border: none; outline: none; }}
+#activityList::item {{ padding: 8px 0; border-bottom: 1px solid {LINE}; }}
+#activityList::item:selected {{ background: transparent; }}
 #todayCount {{ font-family: "Bahnschrift SemiBold Condensed"; font-size: 54px; color: {GOLD}; }}
-#notice {{ background: {DUSK}; border-bottom: 1px solid {LINE}; }}
+#notice {{ background: {DUSK}; border: 1px solid {LINE}; border-radius: 8px; }}
 #pill {{ border: 1px solid {LINE}; border-radius: 14px; min-height: 18px; padding: 4px 12px; font-size: 13px; }}
 QLineEdit {{ background: {NIGHT}; border: 1px solid {LINE}; border-radius: 5px; padding: 9px 11px;
              selection-background-color: {GOLD}; selection-color: {NIGHT}; }}
 QLineEdit:hover {{ border-color: {LILAC}; }}
 QLineEdit:focus {{ border: 1px solid {GOLD}; }}
+QComboBox {{ background: {NIGHT}; border: 1px solid {LINE}; border-radius: 5px; padding: 8px 10px; min-height: 20px; }}
+QComboBox:hover {{ border-color: {LILAC}; }}
+QComboBox:focus {{ border: 1px solid {GOLD}; }}
+QComboBox::drop-down {{ border: none; width: 24px; }}
+QComboBox QAbstractItemView {{ background: {DUSK}; border: 1px solid {LINE}; selection-background-color: #3A3426; }}
 QPushButton {{ background: {DUSK}; border: 1px solid {LINE}; border-radius: 5px; padding: 9px 15px; font-weight: 500; }}
-QPushButton:hover {{ background: #38264B; border-color: {LILAC}; }}
+QPushButton:hover {{ background: #2B2C2F; border-color: {LILAC}; }}
 QPushButton:pressed {{ background: {NIGHT}; }}
 QPushButton:focus {{ border: 1px solid {GOLD}; }}
-QPushButton:disabled {{ color: #7A6B8C; background: {NIGHT}; border-color: {DUSK}; }}
+QPushButton:disabled {{ color: #77797D; background: {NIGHT}; border-color: {DUSK}; }}
 #primary {{ background: {GOLD}; color: {NIGHT}; border: 1px solid {GOLD}; font-weight: 600; }}
-#primary:hover {{ background: #FFCB55; border-color: #FFCB55; }}
-#primary:pressed {{ background: #D69A1C; }}
+#primary:hover {{ background: #E4C46F; border-color: #E4C46F; }}
+#primary:pressed {{ background: #B8953E; }}
 #primary:focus {{ border: 2px solid {BONE}; }}
-#primary:disabled {{ background: #3E3044; color: #8A7C8E; border-color: #3E3044; }}
+#primary:disabled {{ background: #3C3D3F; color: #A5A7AB; border-color: #3C3D3F; }}
 #capture {{ text-align: left; padding: 12px 15px; font-family: "Bahnschrift SemiBold Condensed"; font-size: 19px; }}
 #capture[listening="true"] {{ border: 1px solid {GOLD}; color: {GOLD}; background: {NIGHT}; }}
 #step {{ background: transparent; }}
@@ -92,7 +105,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
 QMenu {{ background: {DUSK}; border: 1px solid {LINE}; padding: 4px; }}
 QMenu::item {{ padding: 7px 24px; border-radius: 4px; }}
-QMenu::item:selected {{ background: #38264B; }}
+QMenu::item:selected {{ background: #2B2C2F; }}
 QToolTip {{ background: {DUSK}; color: {BONE}; border: 1px solid {LINE}; padding: 4px; }}
 """
 
@@ -105,6 +118,7 @@ STATES = {
 }
 
 KEY_LABELS = {
+    "BACKSPACE": "Backspace",
     "WHEELUP": "Scroll wheel up", "WHEELDOWN": "Scroll wheel down", "MOUSE1": "Left mouse",
     "MOUSE2": "Right mouse", "MOUSE3": "Middle mouse", "MOUSE4": "Mouse back", "MOUSE5": "Mouse forward",
 }
@@ -126,8 +140,9 @@ def qt_key_name(key: int) -> str | None:
         return chr(key)
     if Qt.Key.Key_F1 <= key <= Qt.Key.Key_F12:
         number = key - Qt.Key.Key_F1 + 1
-        return None if number in (8, 10) else f"F{number}"  # used by the app's own hotkeys
+        return None if number == 8 else f"F{number}"  # F8 is used to capture the prompt
     return {
+        Qt.Key.Key_Backspace: "BACKSPACE",
         Qt.Key.Key_Space: "SPACE", Qt.Key.Key_Shift: "SHIFT", Qt.Key.Key_Control: "CTRL",
         Qt.Key.Key_Alt: "ALT", Qt.Key.Key_Tab: "TAB",
     }.get(key)
@@ -177,15 +192,17 @@ class Pill(QLabel):
 
 
 class KeyCapture(QPushButton):
-    """Click it, then press the key, mouse button or scroll direction you use."""
+    """Click it to choose the key or input used for an action."""
 
     captured = Signal(str)
 
-    def __init__(self):
+    def __init__(self, keyboard_only: bool = False, action_label: str = "interact key"):
         super().__init__()
         self.setObjectName("capture")
         self.current = "E"
         self.listening = False
+        self.keyboard_only = keyboard_only
+        self.action_label = action_label
         self.clicked.connect(self._listen)
         self._refresh()
 
@@ -194,7 +211,8 @@ class KeyCapture(QPushButton):
         self._refresh()
 
     def _refresh(self) -> None:
-        self.setText("Press your interact key (Esc cancels)" if self.listening else key_label(self.current))
+        prompt = f"Press your {self.action_label} (Esc cancels)"
+        self.setText(prompt if self.listening else key_label(self.current))
         self.setProperty("listening", self.listening)
         self.style().unpolish(self)
         self.style().polish(self)
@@ -202,13 +220,15 @@ class KeyCapture(QPushButton):
     def _listen(self) -> None:
         self.listening = True
         self.grabKeyboard()
-        self.grabMouse()
+        if not self.keyboard_only:
+            self.grabMouse()
         self._refresh()
 
     def _finish(self, name: str | None) -> None:
         self.listening = False
         self.releaseKeyboard()
-        self.releaseMouse()
+        if not self.keyboard_only:
+            self.releaseMouse()
         if name:
             self.current = name
             self.captured.emit(name)
@@ -226,12 +246,18 @@ class KeyCapture(QPushButton):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if self.listening:
+            if self.keyboard_only:
+                event.accept()
+                return
             self._finish(MOUSE_NAMES.get(event.button()))
         else:
             super().mousePressEvent(event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         if self.listening and event.angleDelta().y():
+            if self.keyboard_only:
+                event.accept()
+                return
             self._finish("WHEELUP" if event.angleDelta().y() > 0 else "WHEELDOWN")
         else:
             super().wheelEvent(event)
@@ -430,16 +456,16 @@ class TrackerPage(QWidget):
         super().__init__()
         self.setObjectName("page")
         columns = QHBoxLayout(self)
-        columns.setContentsMargins(0, 0, 0, 0)
-        columns.setSpacing(0)
+        columns.setContentsMargins(24, 16, 24, 20)
+        columns.setSpacing(16)
 
         left = QVBoxLayout()
         left.setContentsMargins(0, 0, 0, 0)
-        left.setSpacing(0)
+        left.setSpacing(12)
         self.notice_frame = QFrame()
         self.notice_frame.setObjectName("notice")
         notice_row = QHBoxLayout(self.notice_frame)
-        notice_row.setContentsMargins(22, 12, 16, 12)
+        notice_row.setContentsMargins(16, 10, 12, 10)
         self.notice = label("", wrap=True)
         notice_row.addWidget(self.notice, 1)
         finish = QPushButton("Finish setup")
@@ -447,45 +473,77 @@ class TrackerPage(QWidget):
         finish.clicked.connect(lambda: window.go_to(1))
         notice_row.addWidget(finish)
         left.addWidget(self.notice_frame)
+
+        left.addWidget(label("Your hunt at a glance", "heading"))
+        left.addWidget(label("Your totals and recent activity, in one place.", "muted"))
         self.stage = ChestStage()
         left.addWidget(self.stage, 1)
         columns.addLayout(left, 1)
 
         rail = QFrame()
         rail.setObjectName("rail")
-        rail.setFixedWidth(330)
+        rail.setFixedWidth(360)
         side = QVBoxLayout(rail)
-        side.setContentsMargins(24, 22, 24, 20)
-        side.setSpacing(6)
+        side.setContentsMargins(0, 0, 0, 0)
+        side.setSpacing(10)
 
+        today_card = QFrame()
+        today_card.setObjectName("statCard")
+        today_layout = QVBoxLayout(today_card)
+        today_layout.setContentsMargins(18, 15, 18, 14)
+        today_layout.setSpacing(5)
+        today_layout.addWidget(label("TODAY", "cardTitle"))
         today_row = QHBoxLayout()
+        today_row.setSpacing(8)
         self.today = label("0", "todayCount")
         today_row.addWidget(self.today)
-        today_row.addWidget(label("today", "muted"), 0, Qt.AlignmentFlag.AlignBottom)
         today_row.addStretch(1)
-        side.addLayout(today_row)
         self.tally = TallyMarks()
-        side.addWidget(self.tally)
-        self.session = label("0 this session", "muted")
-        side.addWidget(self.session)
-        side.addSpacing(14)
+        self.tally.setFixedWidth(142)
+        today_row.addWidget(self.tally, 0, Qt.AlignmentFlag.AlignVCenter)
+        today_layout.addLayout(today_row)
+        today_layout.addWidget(label("chests opened today", "muted"))
+        side.addWidget(today_card)
 
-        side.addWidget(label("Recent", "subheading"))
+        session_card = QFrame()
+        session_card.setObjectName("statCard")
+        session_layout = QVBoxLayout(session_card)
+        session_layout.setContentsMargins(18, 14, 18, 13)
+        session_layout.setSpacing(3)
+        session_layout.addWidget(label("THIS SESSION", "cardTitle"))
+        session_row = QHBoxLayout()
+        self.session = label("0", "sessionCount")
+        session_row.addWidget(self.session)
+        session_row.addWidget(label("chests since launch", "muted"), 0, Qt.AlignmentFlag.AlignBottom)
+        session_row.addStretch(1)
+        session_layout.addLayout(session_row)
+        side.addWidget(session_card)
+
+        activity_card = QFrame()
+        activity_card.setObjectName("activityCard")
+        activity_layout = QVBoxLayout(activity_card)
+        activity_layout.setContentsMargins(18, 14, 18, 10)
+        activity_layout.setSpacing(4)
+        activity_layout.addWidget(label("Recent activity", "subheading"))
+        activity_layout.addWidget(label("Latest tracker events", "small"))
         self.activity = QListWidget()
+        self.activity.setObjectName("activityList")
         self.activity.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.activity.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.activity.setWordWrap(True)
-        side.addWidget(self.activity, 1)
+        activity_layout.addWidget(self.activity, 1)
         self.empty = QListWidgetItem("Open a chest in Fortnite and it appears here.")
         self.empty.setForeground(QColor(LILAC))
         self.activity.addItem(self.empty)
+        side.addWidget(activity_card, 1)
 
         actions = QHBoxLayout()
         self.remove = QPushButton("Remove last chest")
-        self.remove.setToolTip("Counted one by mistake? You can also press F10 in game.")
+        self.remove.setToolTip("Counted one by mistake? Press your undo key while Fortnite is focused.")
         self.remove.clicked.connect(lambda: window.record_chest(-1, "manual"))
         actions.addWidget(self.remove, 1)
-        self.pause = QPushButton("Pause")
+        self.pause = QPushButton("Pause tracking")
+        self.pause.setObjectName("primary")
         self.pause.clicked.connect(window.toggle_pause)
         actions.addWidget(self.pause)
         side.addLayout(actions)
@@ -494,7 +552,7 @@ class TrackerPage(QWidget):
     def show_stats(self, stats: Stats) -> None:
         self.today.setText(f"{stats.today:,}")
         self.tally.set_count(stats.today)
-        self.session.setText(f"{stats.session:,} this session")
+        self.session.setText(f"{stats.session:,}")
         self.remove.setEnabled(stats.total > 0)
 
     def log(self, text: str, color: str = BONE) -> None:
@@ -579,11 +637,14 @@ class SetupPage(QWidget):
         outer.addWidget(scroll)
         layout.setSpacing(4)
         layout.addWidget(label("Setup", "heading"))
-        layout.addWidget(label("Four steps. Everything saves as you go.", "muted"))
+        layout.addWidget(label("Save a chest prompt to start. Name and Discord sharing are optional.", "muted"))
         layout.addSpacing(14)
 
         self.name_step = Step(1, "Your name")
-        self.name_step.content.addWidget(label("This is how you appear on your group's leaderboard.", "muted", wrap=True))
+        self.name_step.content.addWidget(label(
+            "Optional. This is how you appear on your group's leaderboard if you connect Discord.",
+            "muted", wrap=True,
+        ))
         self.name = QLineEdit(settings["player_name"])
         self.name.setPlaceholderText("Player name")
         self.name.setMaxLength(32)
@@ -592,7 +653,8 @@ class SetupPage(QWidget):
 
         self.webhook_step = Step(2, "Discord channel link")
         self.webhook_step.content.addWidget(label(
-            "Paste the webhook URL your group shares. In Discord, open the channel's Edit Channel, "
+            "Optional. Without a webhook, counts stay on this PC. To share counts, paste the webhook "
+            "URL your group shares. In Discord, open the channel's Edit Channel, "
             "then Integrations, then Webhooks. Keep it within your group, because anyone who has it "
             "can post to the channel.",
             "muted", wrap=True,
@@ -621,6 +683,14 @@ class SetupPage(QWidget):
         self.capture.set_key(settings["interact_keys"][0])
         self.capture.captured.connect(self._save_key)
         self.key_step.content.addWidget(self.capture)
+        self.key_step.content.addWidget(label(
+            "Click to choose an undo key. It works only while Fortnite is focused; Backspace is the default.",
+            "muted", wrap=True,
+        ))
+        self.remove_capture = KeyCapture(keyboard_only=True, action_label="undo key")
+        self.remove_capture.set_key(settings["remove_key"])
+        self.remove_capture.captured.connect(self._save_remove_key)
+        self.key_step.content.addWidget(self.remove_capture)
 
         self.prompt_step = Step(4, "Chest prompt", last=True)
         self.prompt_step.content.addWidget(label(
@@ -641,8 +711,8 @@ class SetupPage(QWidget):
         self.prompt_step.content.addSpacing(8)
         self.prompt_step.content.addWidget(label("Live match", "subheading"))
         self.prompt_step.content.addWidget(label(
-            "Look at a chest in Fortnite. The bar should reach the marker. Drag the marker to change "
-            "how close a match is required.",
+            "Look at a chest in Fortnite. The live bar should reach the marker. Drag the marker to "
+            "change the required match: lower values are more permissive, while higher values are stricter.",
             "muted", wrap=True,
         ))
         self.meter = MatchMeter(settings["match_threshold"])
@@ -655,6 +725,23 @@ class SetupPage(QWidget):
         for step in self.steps:
             step.opened.connect(self._open_step)
             layout.addWidget(step)
+
+        layout.addSpacing(12)
+        layout.addWidget(label("In-game overlay", "subheading"))
+        layout.addWidget(label(
+            "Show your live chest count over Fortnite. Turn on positioning to drag the badge somewhere "
+            "that does not cover your HUD, then finish positioning before you play.",
+            "muted", wrap=True,
+        ))
+        overlay_row = QHBoxLayout()
+        self.overlay_enabled = QCheckBox("Show the chest count over Fortnite")
+        self.overlay_enabled.setChecked(settings["overlay_enabled"])
+        self.overlay_enabled.toggled.connect(window.set_overlay_enabled)
+        overlay_row.addWidget(self.overlay_enabled, 1)
+        self.overlay_position = QPushButton("Set overlay position")
+        self.overlay_position.clicked.connect(self._toggle_overlay_position)
+        overlay_row.addWidget(self.overlay_position)
+        layout.addLayout(overlay_row)
         layout.addStretch(1)
         self.refresh_gallery()
         self.refresh_steps()
@@ -664,11 +751,23 @@ class SetupPage(QWidget):
         for step in self.steps:
             step.set_open(step is chosen and not (step.is_open and step is chosen))
 
+    def _toggle_overlay_position(self) -> None:
+        self.window_.toggle_overlay_positioning()
+        self.overlay_position.setText(
+            "Done positioning" if self.window_._overlay_positioning else "Set overlay position"
+        )
+
     def refresh_steps(self) -> None:
         settings = self.window_.settings
-        self.name_step.set_done(bool(settings["player_name"]), settings["player_name"])
-        self.webhook_step.set_done(bool(settings["webhook_url"]), "Linked")
-        self.key_step.set_done(True, key_label(settings["interact_keys"][0]))
+        name_summary = settings["player_name"] or (
+            "Needed to share" if settings["webhook_url"] else "Optional"
+        )
+        self.name_step.set_done(not settings["webhook_url"] or bool(settings["player_name"]), name_summary)
+        self.webhook_step.set_done(True, "Linked" if settings["webhook_url"] else "Local only")
+        self.key_step.set_done(
+            True,
+            f"{key_label(settings['interact_keys'][0])} interact · {key_label(settings['remove_key'])} undo",
+        )
         count = len(list(self.window_.templates_dir.glob("*.png")))
         self.prompt_step.set_done(count > 0, f"{count} saved")
 
@@ -728,7 +827,20 @@ class SetupPage(QWidget):
                 self._test_webhook()
 
     def _save_key(self, name: str) -> None:
+        if name == self.window_.settings["remove_key"]:
+            self.capture.set_key(self.window_.settings["interact_keys"][0])
+            QMessageBox.warning(self, "Keys must be different", "Choose a different key for interact and undo.")
+            return
         self.window_.settings.set(interact_keys=[name])
+        self.refresh_steps()
+        self.window_.restart_engine()
+
+    def _save_remove_key(self, name: str) -> None:
+        if name == self.window_.settings["interact_keys"][0]:
+            self.remove_capture.set_key(self.window_.settings["remove_key"])
+            QMessageBox.warning(self, "Keys must be different", "Choose a different key for interact and undo.")
+            return
+        self.window_.settings.set(remove_key=name)
         self.refresh_steps()
         self.window_.restart_engine()
 
@@ -759,6 +871,200 @@ class SetupPage(QWidget):
     def clear_score(self, text: str) -> None:
         self.meter.set_score(0)
         self.score_text.setText(text)
+
+
+class FortniteStatsPage(QWidget):
+    result_ready = Signal(object, str)
+
+    METRICS = (
+        ("wins", "Wins"),
+        ("winRate", "Win rate"),
+        ("kd", "K/D"),
+        ("kills", "Eliminations"),
+    )
+
+    def __init__(self, window: "MainWindow"):
+        super().__init__()
+        self.window_ = window
+        settings = window.settings
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll, layout = scroll_page()
+        outer.addWidget(scroll)
+
+        layout.addWidget(label("Fortnite stats", "heading"))
+        layout.addWidget(label(
+            "Look up Battle Royale lifetime or current-season stats. Fortnite-API.com is an independent "
+            "service, not an Epic Games API. You provide its key and a public player name; this app does "
+            "not sign in to Epic.",
+            "muted", wrap=True,
+        ))
+
+        form = QFrame()
+        form.setObjectName("statCard")
+        fields = QGridLayout(form)
+        fields.setContentsMargins(18, 16, 18, 16)
+        fields.setHorizontalSpacing(12)
+        fields.setVerticalSpacing(10)
+        fields.addWidget(label("Fortnite-API key", "small"), 0, 0)
+        self.api_key = QLineEdit(settings["fortnite_api_key"])
+        self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key.setPlaceholderText("Paste your API key; it stays in this app's local settings")
+        fields.addWidget(self.api_key, 0, 1, 1, 2)
+        api_link = QPushButton("Get API key")
+        api_link.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://dash.fortnite-api.com/account")))
+        fields.addWidget(api_link, 0, 3)
+
+        fields.addWidget(label("Player name", "small"), 1, 0)
+        self.account_name = QLineEdit(settings["fortnite_account_name"])
+        self.account_name.setPlaceholderText("Fortnite display name")
+        fields.addWidget(self.account_name, 1, 1)
+        fields.addWidget(label("Platform", "small"), 1, 2)
+        self.account_type = QComboBox()
+        for text, value in (("Epic", "epic"), ("PlayStation", "psn"), ("Xbox", "xbl")):
+            self.account_type.addItem(text, value)
+        self._set_combo_data(self.account_type, settings["fortnite_account_type"])
+        fields.addWidget(self.account_type, 1, 3)
+
+        fields.addWidget(label("Stats period", "small"), 2, 0)
+        self.time_window = QComboBox()
+        self.time_window.addItem("Lifetime", "lifetime")
+        self.time_window.addItem("Current season", "season")
+        self._set_combo_data(self.time_window, settings["fortnite_stats_window"])
+        fields.addWidget(self.time_window, 2, 1)
+        self.refresh = QPushButton("Refresh stats")
+        self.refresh.setObjectName("primary")
+        self.refresh.clicked.connect(self._fetch)
+        fields.addWidget(self.refresh, 2, 3)
+        layout.addWidget(form)
+
+        self.status = label("Enter your key and a player name, then select Refresh stats.", "small", wrap=True)
+        layout.addWidget(self.status)
+        self.profile_title = label("No stats loaded yet", "subheading")
+        layout.addWidget(self.profile_title)
+
+        layout.addWidget(label("Overall", "subheading"))
+        self.overall_values = self._add_metric_cards(layout, 4)
+
+        layout.addWidget(label("By game mode", "subheading"))
+        self.mode_values = {}
+        mode_grid = QGridLayout()
+        mode_grid.setHorizontalSpacing(12)
+        mode_grid.setVerticalSpacing(12)
+        for column, (mode, title) in enumerate((("solo", "Solo"), ("duo", "Duos"), ("squad", "Squads"))):
+            self.mode_values[mode] = self._add_mode_card(mode_grid, column, title)
+        layout.addLayout(mode_grid)
+        layout.addStretch(1)
+
+        self.result_ready.connect(self._show_result)
+        cached = settings["fortnite_stats_cache"]
+        if isinstance(cached, dict) and cached.get("account"):
+            self._render_stats(cached, cached=True)
+
+    @staticmethod
+    def _set_combo_data(combo: QComboBox, value: str) -> None:
+        index = combo.findData(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+    def _add_metric_cards(self, layout: QVBoxLayout, columns: int) -> dict[str, QLabel]:
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
+        values = {}
+        for index, (key, title) in enumerate(self.METRICS):
+            card = QFrame()
+            card.setObjectName("statCard")
+            box = QVBoxLayout(card)
+            box.setContentsMargins(16, 12, 16, 12)
+            box.setSpacing(4)
+            box.addWidget(label(title, "cardTitle"))
+            value = label("—", "sessionCount")
+            box.addWidget(value)
+            grid.addWidget(card, index // columns, index % columns)
+            values[key] = value
+        layout.addLayout(grid)
+        return values
+
+    def _add_mode_card(self, grid: QGridLayout, column: int, title: str) -> dict[str, QLabel]:
+        card = QFrame()
+        card.setObjectName("statCard")
+        box = QVBoxLayout(card)
+        box.setContentsMargins(16, 12, 16, 12)
+        box.setSpacing(6)
+        box.addWidget(label(title, "subheading"))
+        values = {}
+        for key, caption in (("wins", "Wins"), ("winRate", "Win rate"), ("kd", "K/D")):
+            row = QHBoxLayout()
+            row.addWidget(label(caption, "muted"))
+            row.addStretch(1)
+            value = label("—", "small")
+            row.addWidget(value)
+            box.addLayout(row)
+            values[key] = value
+        grid.addWidget(card, 0, column)
+        return values
+
+    def _fetch(self) -> None:
+        key = self.api_key.text().strip()
+        name = self.account_name.text().strip()
+        account_type = self.account_type.currentData()
+        time_window = self.time_window.currentData()
+        self.window_.settings.set(
+            fortnite_api_key=key,
+            fortnite_account_name=name,
+            fortnite_account_type=account_type,
+            fortnite_stats_window=time_window,
+        )
+        self.status.setText("Fetching stats…")
+        self.refresh.setEnabled(False)
+
+        def request() -> None:
+            try:
+                result = fetch_stats(key, name, account_type, time_window)
+            except FortniteStatsError as error:
+                self.result_ready.emit(None, str(error))
+            except Exception as error:
+                log.warning("Fortnite stats lookup failed: %s", error.__class__.__name__)
+                self.result_ready.emit(None, "The stats lookup failed unexpectedly. Please try again.")
+            else:
+                self.result_ready.emit(result, "")
+
+        threading.Thread(target=request, name="fortnite-stats", daemon=True).start()
+
+    def _show_result(self, result: object, error: str) -> None:
+        self.refresh.setEnabled(True)
+        if error:
+            self.status.setText(error)
+            return
+        if not isinstance(result, dict):
+            self.status.setText("The stats service returned no usable stats.")
+            return
+        self.window_.settings.set(fortnite_stats_cache=result)
+        self._render_stats(result, cached=False)
+
+    def _render_stats(self, result: dict, cached: bool) -> None:
+        account = result.get("account") or {}
+        stats = result.get("stats") or {}
+        overall = stats.get("overall") or {}
+        self.profile_title.setText(f"{account.get('name', 'Player')} · {result.get('time_window', 'lifetime').title()}")
+        for key, _title in self.METRICS:
+            self.overall_values[key].setText(self._format_stat(key, overall.get(key)))
+        for mode, values in self.mode_values.items():
+            row = stats.get(mode) or {}
+            for key, value in values.items():
+                value.setText(self._format_stat(key, row.get(key)))
+        self.status.setText("Showing saved stats." if cached else f"Updated {datetime.now():%Y-%m-%d %H:%M}.")
+
+    @staticmethod
+    def _format_stat(key: str, value) -> str:
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return "—"
+        if key == "winRate":
+            return f"{value:.1f}%"
+        if key == "kd":
+            return f"{value:.2f}"
+        return f"{int(value):,}"
 
 
 class GroupPage(QWidget):
@@ -882,11 +1188,16 @@ class MainWindow(QMainWindow):
         self.delivery_ok = True
         self.current_state = "off"
         self.leaderboard_seen = None
+        self.overlay = ChestOverlay()
+        self.overlay.set_count(self.stats.total)
+        self.overlay.position_saved.connect(self._save_overlay_position)
+        self._overlay_positioning = False
+        self._overlay_screen = None
 
         self.setWindowTitle("Chest Tracker")
         self.setWindowIcon(icon)
-        self.resize(1040, 720)
-        self.setMinimumSize(800, 600)
+        self.resize(1160, 780)
+        self.setMinimumSize(920, 650)
         self.setStyleSheet(STYLE)
 
         root = QWidget()
@@ -911,9 +1222,11 @@ class MainWindow(QMainWindow):
         self.tracker = TrackerPage(self)
         self.setup = SetupPage(self)
         self.group = GroupPage(self)
+        self.fortnite_stats = FortniteStatsPage(self)
         self.nav = QButtonGroup(self)
         for index, (name, page) in enumerate(
-            (("Tracker", self.tracker), ("Setup", self.setup), ("Group", self.group))
+            (("Tracker", self.tracker), ("Setup", self.setup), ("Group", self.group),
+             ("Fortnite Stats", self.fortnite_stats))
         ):
             self.stack.addWidget(page)
             button = QPushButton(name)
@@ -955,7 +1268,11 @@ class MainWindow(QMainWindow):
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self._refresh)
         self.refresh_timer.start(5000)
+        self.overlay_timer = QTimer(self)
+        self.overlay_timer.timeout.connect(self._sync_overlay)
+        self.overlay_timer.start(200)
         self._refresh()
+        self._sync_overlay()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -997,10 +1314,6 @@ class MainWindow(QMainWindow):
 
     def missing_setup(self) -> list[str]:
         missing = []
-        if not self.settings["player_name"]:
-            missing.append("your name")
-        if not self.settings["webhook_url"]:
-            missing.append("the Discord channel link")
         if not list(self.templates_dir.glob("*.png")):
             missing.append("the chest prompt")
         return missing
@@ -1028,6 +1341,7 @@ class MainWindow(QMainWindow):
         self.engine = WatchEngine(
             matcher, interact, self.settings["search_area"],
             self.chest.emit, self.engine_state.emit, self.match_score.emit, self.attempt.emit,
+            remove_hotkey=key_code(self.settings["remove_key"]),
         )
         self.engine.start()
 
@@ -1062,7 +1376,10 @@ class MainWindow(QMainWindow):
 
     def record_chest(self, amount: int, source: str) -> None:
         self.stats.add(amount)
-        self.sender.add(amount)
+        self.overlay.set_count(self.stats.total, celebrate=source == "detected" and amount > 0)
+        # In local-only mode, don't queue counts for a Discord webhook that isn't configured.
+        if self.settings["webhook_url"] and self.settings["player_name"]:
+            self.sender.add(amount)
         self._show_stats()
         if source == "detected":
             self.tracker.stage.show_opened(self.stats.total)
@@ -1073,10 +1390,76 @@ class MainWindow(QMainWindow):
 
     def toggle_pause(self) -> None:
         self.paused = not self.paused
-        text = "Resume" if self.paused else "Pause"
+        text = "Resume tracking" if self.paused else "Pause tracking"
         self.tracker.pause.setText(text)
-        self.tray_pause.setText(text)
+        self.tray_pause.setText("Resume" if self.paused else "Pause")
         self.restart_engine()
+
+    def set_overlay_enabled(self, enabled: bool) -> None:
+        self.settings.set(overlay_enabled=enabled)
+        if not enabled and self._overlay_positioning:
+            self.toggle_overlay_positioning()
+        self._sync_overlay()
+
+    def toggle_overlay_positioning(self) -> None:
+        self._overlay_positioning = not self._overlay_positioning
+        self.overlay.positioning = self._overlay_positioning
+        if self._overlay_positioning:
+            self._overlay_screen = self.screen() or QGuiApplication.primaryScreen()
+            self._place_overlay(self._overlay_screen)
+            self.overlay.set_click_through(False)
+            self.overlay.show()
+            self.overlay.raise_()
+        else:
+            self._sync_overlay()
+
+    def _place_overlay(self, screen) -> None:
+        if screen is None:
+            return
+        self._overlay_screen = screen
+        bounds = screen.geometry()
+        max_x = max(0, bounds.width() - self.overlay.width())
+        max_y = max(0, bounds.height() - self.overlay.height())
+        position = self.settings["overlay_position"]
+        x = bounds.left() + round(max_x * min(1.0, max(0.0, position[0])))
+        y = bounds.top() + round(max_y * min(1.0, max(0.0, position[1])))
+        self.overlay.move(x, y)
+
+    def _save_overlay_position(self, point: QPoint) -> None:
+        screen = QGuiApplication.screenAt(self.overlay.frameGeometry().center())
+        screen = screen or self._overlay_screen or self.overlay.screen()
+        if screen is None:
+            return
+        self._overlay_screen = screen
+        bounds = screen.geometry()
+        max_x = max(1, bounds.width() - self.overlay.width())
+        max_y = max(1, bounds.height() - self.overlay.height())
+        left = min(bounds.left() + max_x, max(bounds.left(), point.x()))
+        top = min(bounds.top() + max_y, max(bounds.top(), point.y()))
+        self.overlay.move(left, top)
+        x = (left - bounds.left()) / max_x
+        y = (top - bounds.top()) / max_y
+        self.settings.set(overlay_position=[x, y])
+
+    def _sync_overlay(self) -> None:
+        if self._overlay_positioning:
+            self.overlay.set_click_through(False)
+            if not self.overlay.isVisible():
+                self.overlay.show()
+            return
+        if not self.settings["overlay_enabled"] or not fortnite_focused():
+            self.overlay.set_click_through(False)
+            self.overlay.hide()
+            return
+
+        bounds = foreground_window_bounds()
+        center = QPoint((bounds[0] + bounds[2]) // 2, (bounds[1] + bounds[3]) // 2)
+        screen = QGuiApplication.screenAt(center) or self.screen() or QGuiApplication.primaryScreen()
+        if screen is not self._overlay_screen:
+            self._place_overlay(screen)
+        self.overlay.set_click_through(True)
+        if not self.overlay.isVisible():
+            self.overlay.show()
 
     def _on_delivery(self, ok: bool, message: str) -> None:
         if ok != self.delivery_ok:
@@ -1137,6 +1520,9 @@ class MainWindow(QMainWindow):
             self.group.show_leaderboard(rows, total)
 
     def closeEvent(self, event) -> None:
+        if self._overlay_positioning:
+            self.toggle_overlay_positioning()
+            self.setup.overlay_position.setText("Set overlay position")
         if not QSystemTrayIcon.isSystemTrayAvailable():
             event.accept()
             self.quit_app()
@@ -1157,6 +1543,8 @@ class MainWindow(QMainWindow):
 
     def _shut_down(self) -> None:
         self.refresh_timer.stop()
+        self.overlay_timer.stop()
+        self.overlay.close()
         if self.engine:
             self.engine.stop()
             self.engine.join(2)

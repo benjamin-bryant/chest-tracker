@@ -24,13 +24,25 @@ class PromptMatcher:
         return cls([t for t in templates if t is not None], threshold)
 
     def best_score(self, frame: np.ndarray) -> float:
+        return self.best_match(frame)[0]
+
+    def best_match(self, frame: np.ndarray) -> tuple[float, tuple[float, float] | None]:
+        """Return the best prompt score and its normalized center position."""
         best = 0.0
+        best_location = None
         for template in self.templates:
             if template.shape[0] > frame.shape[0] or template.shape[1] > frame.shape[1]:
                 continue
             result = cv2.matchTemplate(frame, template, cv2.TM_CCOEFF_NORMED)
-            best = max(best, float(np.nanmax(result)))
-        return best
+            result = np.nan_to_num(result, nan=-1.0)
+            _, score, _, location = cv2.minMaxLoc(result)
+            if score > best:
+                best = float(score)
+                best_location = (
+                    (location[0] + template.shape[1] / 2) / frame.shape[1],
+                    (location[1] + template.shape[0] / 2) / frame.shape[0],
+                )
+        return best, best_location
 
     def is_visible(self, frame: np.ndarray) -> bool:
         return self.best_score(frame) >= self.threshold
@@ -80,8 +92,9 @@ class ChestDetector:
     FLICKER_SECONDS = 0.4  # gone for less than this is a detection blip, not a change
     RELEASE_GRACE = 1.0  # prompt still there this long after the key: cancelled
     AIM_SECONDS = 1.0  # must keep looking at the chest this long after pressing
-    CONFIRM_SECONDS = 3.0  # prompt must stay gone this long, so a cancel can show itself
+    CONFIRM_SECONDS = 2.0  # prompt must stay gone this long, so a cancel can show itself
     COOLDOWN = 0.5  # a stray press right after counting can't start a new attempt
+    LOCATION_CHANGE = 0.03  # normalized screen distance that distinguishes a new prompt position
 
     def __init__(self):
         self._cooldown_until = 0.0
@@ -90,25 +103,94 @@ class ChestDetector:
     def reset(self) -> None:
         self.armed = False
         self._last_seen: float | None = None
+        self._last_prompt_location: tuple[float, float] | None = None
         self._last_key = 0.0
         self._pressed_at = 0.0
         self._gone_since: float | None = None
         self._looked_away = False
         self._announced = False
+        self._key_down = False
+        self._target_location: tuple[float, float] | None = None
+        self._candidate_location: tuple[float, float] | None = None
+        self.attempt_id = 0
+
+    def _start_attempt(self, now: float, location: tuple[float, float] | None) -> None:
+        self.armed = True
+        self._pressed_at = now
+        self._last_key = now
+        self._looked_away = False
+        self._announced = False
+        self._gone_since = None
+        self._target_location = location
+        self._candidate_location = None
+        self.attempt_id += 1
+
+    def _location_changed(self, location: tuple[float, float] | None) -> bool:
+        if self._target_location is None or location is None:
+            return False
+        return max(
+            abs(location[0] - self._target_location[0]),
+            abs(location[1] - self._target_location[1]),
+        ) >= self.LOCATION_CHANGE
 
     def _finish(self, event: str) -> str:
         self.armed = False
         self._gone_since = None
+        self._target_location = None
+        self._candidate_location = None
         return event
 
     def update(
-        self, now: float, prompt_visible: bool, key_down: bool, looked_away: bool = False
+        self,
+        now: float,
+        prompt_visible: bool,
+        key_down: bool,
+        looked_away: bool = False,
+        prompt_location: tuple[float, float] | None = None,
     ) -> str | None:
         """Feed one frame. Returns PENDING, OPENED or CANCELLED when something happens."""
-        if prompt_visible:
+        fresh_key = key_down and not self._key_down
+        self._key_down = key_down
+
+        if prompt_visible and not self.armed:
             self._last_seen = now
+            self._last_prompt_location = prompt_location
         if self._last_seen is None:
             return None
+
+        if self.armed and prompt_visible and self._gone_since is not None:
+            gone_for = now - self._gone_since
+            if gone_for < self.FLICKER_SECONDS:
+                self._gone_since = None
+                self._last_seen = now
+                self._last_prompt_location = prompt_location
+                self._candidate_location = None
+            elif self._location_changed(prompt_location):
+                self._candidate_location = prompt_location
+            else:
+                self._finish(CANCELLED)
+                self._last_seen = now
+                self._last_prompt_location = prompt_location
+                if fresh_key and now >= self._cooldown_until:
+                    self._start_attempt(now, prompt_location)
+                return CANCELLED
+
+        if (
+            self.armed
+            and fresh_key
+            and self._candidate_location is not None
+            and now - self._pressed_at >= self.AIM_SECONDS
+            and not self._looked_away
+        ):
+            # The new prompt was interacted with after the first chest's aim check.
+            # Count the previous chest and begin tracking this one on the same frame.
+            location = self._candidate_location
+            self._cooldown_until = now + self.COOLDOWN
+            self._finish(OPENED)
+            self._last_seen = now
+            self._last_prompt_location = location
+            self._start_attempt(now, location)
+            return OPENED
 
         if (
             key_down
@@ -116,11 +198,9 @@ class ChestDetector:
             and now >= self._cooldown_until
         ):
             if not self.armed:
-                self.armed = True
-                self._pressed_at = now
-                self._looked_away = False
-                self._announced = False
-            self._last_key = now
+                self._start_attempt(now, self._last_prompt_location or prompt_location)
+            if self._candidate_location is None:
+                self._last_key = now
 
         if not self.armed:
             return None
@@ -129,9 +209,21 @@ class ChestDetector:
             self._looked_away = True
 
         if prompt_visible:
-            if self._gone_since is not None and now - self._gone_since >= self.FLICKER_SECONDS:
-                return self._finish(CANCELLED)  # the prompt came back: the search stopped
-            self._gone_since = None
+            if self._candidate_location is not None:
+                gone_since = self._gone_since if self._gone_since is not None else now
+                gone_for = now - gone_since
+                if gone_for >= self.CONFIRM_SECONDS:
+                    event = CANCELLED if self._looked_away else OPENED
+                    if event == OPENED:
+                        self._cooldown_until = now + self.COOLDOWN
+                    self._finish(event)
+                    self._last_seen = now
+                    self._last_prompt_location = prompt_location
+                    return event
+                return None
+            if self._gone_since is None:
+                self._last_seen = now
+                self._last_prompt_location = prompt_location
             if now - self._last_key > self.RELEASE_GRACE:
                 return self._finish(CANCELLED)
             return None

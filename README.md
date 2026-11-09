@@ -17,7 +17,9 @@
   <img alt="MIT license" src="https://img.shields.io/badge/License-MIT-F4B42A?style=flat-square">
 </p>
 
-Chest Tracker counts the Fortnite chests you and your friends open and keeps a shared leaderboard in Discord. It's a single download with nothing to install, and it runs quietly in your system tray while you play.
+Chest Tracker counts the Fortnite chests you open and can keep a shared leaderboard in Discord. It also works in local-only mode: counts stay on this PC and no Discord setup is needed.
+
+This fork is based on [Xxoris190/chest-tracker](https://github.com/Xxoris190/chest-tracker). The original project and its contributors retain their copyright; this fork keeps the original MIT license and notices.
 
 <p align="center">
   <img src="docs/images/demo.gif" alt="The app's chest lifting its lid during a search, slamming shut on a cancel, then bursting with coins when a chest counts" width="85%">
@@ -29,21 +31,26 @@ Chest Tracker counts the Fortnite chests you and your friends open and keeps a s
 
 - **Counts real searches.** Cancelled searches and chests you only walk past don't count.
 - **Shows it live.** The chest on screen lifts its lid during a search, bursts open when a chest counts, and slams shut on a cancel.
-- **Keeps a group leaderboard.** A Discord bot totals everyone's chests and answers `/chests` and `/leaderboard`.
+- **Works without Discord.** Your local totals and activity history work without a webhook or bot.
+- **Can keep a group leaderboard.** Optionally connect Discord to total everyone's chests and answer `/chests` and `/leaderboard`.
+- **Can show Fortnite stats.** Look up public Battle Royale stats by player name with an optional Fortnite-API.com key.
 - **Doesn't lose chests.** If Discord can't be reached, chests are saved and sent later, and the bot catches up after being offline.
 - **Works with your binds.** Use any key, a mouse button, or the scroll wheel to interact.
 - **Finds your screen.** It follows Fortnite to whichever monitor it's on.
+- **Optional in-game overlay.** Show the chest count over Fortnite, drag it clear of your HUD in Setup, and mouse input passes through while playing.
 
 ## Get started
 
 1. Download [`Chest-Tracker.exe`](../../releases/latest/download/Chest-Tracker.exe) and double-click it.
 2. If Windows shows "Windows protected your PC", select **More info**, then **Run anyway**. It appears because the app isn't signed with a paid certificate.
-3. Open **Setup** and go through the four steps:
-   1. **Your name:** how you appear on the leaderboard.
-   2. **Discord channel link:** the webhook URL your group shares. In Discord, open the channel's **Edit Channel > Integrations > Webhooks**.
-   3. **Interact key:** click the button, then press the key or scroll the wheel the way you open chests.
-   4. **Chest prompt:** set Fortnite to **Windowed Fullscreen**, select **Set up prompt**, look at a chest, and press **F8**. Drag a box around the prompt to zoom in, then drag a tight box around only the word **SEARCH**.
-4. Play. The app starts watching whenever Fortnite is the active window.
+3. Open **Setup** and set the **Interact key** and **Chest prompt**. To calibrate the prompt, set Fortnite to **Windowed Fullscreen**, select **Set up prompt**, look at a chest, and press **F8**. Drag a box around the prompt to zoom in, then drag a tight box around only the word **SEARCH**.
+4. Play. The app starts watching whenever Fortnite is the active window, and saves counts on this PC.
+
+To share counts with a group, add your player name and Discord webhook in **Setup**. In Discord, open the channel's **Edit Channel > Integrations > Webhooks**. The Discord bot and leaderboard are optional too.
+
+Open **Fortnite Stats** to enter a Fortnite-API.com key, player name and account platform, then select **Refresh stats**. The page shows lifetime or current-season overall and Solo/Duo/Squad stats. Stats requests are manual; the app doesn't sign in to Epic. Fortnite-API.com is an independent, non-official service and requires its own API key for stats. You can create one at the [Fortnite-API dashboard](https://dash.fortnite-api.com/account).
+
+To use the in-game overlay, open **Setup**, enable **Show the chest count over Fortnite**, select **Set overlay position**, and drag the badge where you want it. Select **Done positioning** before returning to Fortnite. The overlay is hidden when Fortnite isn't the active window.
 
 Closing the window keeps it counting from the system tray. To exit, right-click the tray icon and select **Quit**.
 
@@ -54,22 +61,22 @@ Closing the window keeps it counting from the system tray. To exit, right-click 
 
 ## How a chest gets counted
 
-Fortnite has no official way to report chest opens, so the app works it out from the screen. A chest counts about 3 seconds after you search it, once all of these are true:
+Fortnite has no official way to report chest opens, so the app works it out from the screen. A chest counts about 2 seconds after you search it, once all of these are true:
 
 1. The SEARCH prompt was on screen and you used your interact key.
 2. You kept aiming at the chest for the first second.
-3. The prompt stayed gone for the full 3 seconds.
+3. The prompt stayed gone for the full 2 seconds.
 
-If the prompt comes back, or you look away during that first second, the search is cancelled. Repeating that doesn't add anything.
+If the same prompt returns in the same screen position, or you look away during that first second, the search is cancelled. If a new prompt appears elsewhere and you interact with it, the previous chest can be counted while the new chest starts its own check.
 
-Counted one by mistake? Press **F10** in game, or select **Remove last chest**. Players can't add chests by hand, but someone with Manage Server can use `/add` in Discord.
+Counted one by mistake? Press **Backspace** while Fortnite is focused, or select **Remove last chest**. You can choose a different keyboard key in **Setup**. Players can't add chests by hand, but someone with Manage Server can use `/add` in Discord.
 
 ### Known limits
 
 The app can't see inside the game, so these rules are strong evidence rather than proof.
 
 - Holding your aim past the first second and then cancelling could still count.
-- Opening a second chest within 3 seconds can make the first one read as cancelled.
+- The rapid-open check relies on the next SEARCH prompt appearing at a different screen position. If the game places it too close to the prior position, the app treats it like a prompt returning on the same chest.
 - The prompt only says SEARCH, so anything else with the same prompt, possibly including ammo boxes, can count.
 - Anyone with the webhook URL could post to the channel directly, so only share it with people you trust.
 - Controllers aren't supported yet.
@@ -97,9 +104,9 @@ Only one person in your group needs to do this. Everyone else only needs the sha
 
 **What the app does:** it takes screenshots while Fortnite is the active window and reads which keys and scroll input you use. It doesn't touch Fortnite's memory or files, and it doesn't press anything for you.
 
-**What it sends:** only your player name and chest count, to the Discord channel you choose. Screenshots stay in memory and are thrown away. The only image saved is the small prompt picture you select, on your own PC.
+**What it sends:** Discord is optional; if configured, the app sends your player name and chest count to your webhook. If you use Fortnite Stats, the app sends the player name and Fortnite-API key to Fortnite-API.com over HTTPS when you select **Refresh stats**. The key and most recent result are stored in the local settings file; the key is not sent to Discord. Screenshots stay in memory and are thrown away. The only image saved for detection is the small prompt picture you select, on your own PC.
 
-**Where your data lives:** your settings, webhook URL and bot token are in `%APPDATA%\ChestTracker`, not in the `.exe`.
+**Where your data lives:** your settings, API key, webhook URL and bot token are in `%APPDATA%\ChestTracker`, not in the `.exe`.
 
 > [!WARNING]
 > This is much lower risk than anything that modifies the game, but nobody can promise it's allowed under Epic's rules. Use it at your own risk.
@@ -154,7 +161,8 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 | `watcher.py` | Screen capture, input checks, and sending to Discord |
 | `wheel.py` | Scroll wheel detection through Windows raw input |
 | `bot.py`, `store.py` | The Discord bot and its database |
-| `ui.py`, `widgets.py` | The app window and the animated chest |
+| `ui.py`, `widgets.py`, `overlay.py` | The app window, animated chest and in-game count badge |
+| `fortnite_stats.py` | The optional Fortnite-API player-stats lookup |
 
 ## License
 

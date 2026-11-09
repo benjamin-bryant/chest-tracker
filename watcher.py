@@ -25,9 +25,10 @@ from wheel import WheelListener
 
 log = logging.getLogger("chest-tracker")
 
-VK_F8, VK_F10 = 0x77, 0x79
+VK_F8, VK_BACK = 0x77, 0x08
 LOOKED_AWAY_BELOW = 0.5  # scene similarity under this means the aim left the chest
 NAMED_KEYS = {
+    "BACKSPACE": VK_BACK,
     "SPACE": 0x20, "SHIFT": 0x10, "CTRL": 0x11, "ALT": 0x12, "TAB": 0x09,
     "MOUSE1": 0x01, "MOUSE2": 0x02, "MOUSE3": 0x04, "MOUSE4": 0x05, "MOUSE5": 0x06,
     **{f"F{n}": 0x6F + n for n in range(1, 13)},
@@ -101,6 +102,13 @@ def fortnite_focused() -> bool:
     title = ctypes.create_unicode_buffer(256)
     user32.GetWindowTextW(user32.GetForegroundWindow(), title, 256)
     return title.value.strip().lower() == "fortnite"
+
+
+def foreground_window_bounds() -> tuple[int, int, int, int]:
+    """Return the focused window's (left, top, right, bottom) screen coordinates."""
+    rect = wintypes.RECT()
+    user32.GetWindowRect(user32.GetForegroundWindow(), ctypes.byref(rect))
+    return rect.left, rect.top, rect.right, rect.bottom
 
 
 def best_monitor(window: tuple[int, int, int, int], monitors: list[dict]) -> dict:
@@ -257,7 +265,7 @@ class WatchEngine(threading.Thread):
         on_attempt: Callable[[str], None] = lambda event: None,
         focused: Callable[[], bool] = fortnite_focused,
         capture_factory=ScreenCapture,
-        remove_hotkey: int = VK_F10,
+        remove_hotkey: int = VK_BACK,
     ):
         super().__init__(daemon=True)
         self.matcher = matcher
@@ -300,10 +308,11 @@ class WatchEngine(threading.Thread):
                 self.on_state(new)
 
         while not self.halt.is_set():
-            if remove_one.pressed():
+            focused = self.focused()
+            # Always sample the key, but only act on a fresh press in Fortnite.
+            if remove_one.pressed() and focused:
                 self.on_chest(-1, "hotkey")
 
-            focused = self.focused()
             if focused != was_focused:
                 was_focused = focused
                 if detector.armed:
@@ -338,19 +347,16 @@ class WatchEngine(threading.Thread):
             blank = black_since is not None and now - black_since >= self.BLACK_SECONDS
             set_state("black" if blank else "watching")
 
-            score = self.matcher.best_score(frame)
+            score, prompt_location = self.matcher.best_match(frame)
             thumb = scene_thumb(frame)
             similarity = scene_similarity(reference, thumb) if reference is not None else 1.0
             lowest_similarity = min(lowest_similarity, similarity)
-            was_armed = detector.armed
+            attempt_id = detector.attempt_id
             event = detector.update(
                 now, score >= self.matcher.threshold, self.interact_used(),
                 looked_away=similarity < LOOKED_AWAY_BELOW,
+                prompt_location=prompt_location if score >= self.matcher.threshold else None,
             )
-            if detector.armed and not was_armed:
-                reference = thumb
-                lowest_similarity = 1.0
-                attempt_started = now
             if event in (OPENED, CANCELLED):
                 # Real numbers from real play, for tuning the rules later.
                 log.info(
@@ -358,6 +364,10 @@ class WatchEngine(threading.Thread):
                     event, now - attempt_started, lowest_similarity,
                 )
                 reference = None
+            if detector.armed and detector.attempt_id != attempt_id:
+                reference = thumb
+                lowest_similarity = 1.0
+                attempt_started = now
             if event == OPENED:
                 self.on_chest(1, "detected")
             elif event in (PENDING, CANCELLED):
