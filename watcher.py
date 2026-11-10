@@ -8,11 +8,13 @@ Fortnite's memory or files, and screenshots are never saved or sent anywhere
 import ctypes
 import json
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable
 from ctypes import wintypes
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import cv2
 import mss
@@ -21,13 +23,15 @@ import requests
 
 from detection import CANCELLED, OPENED, PENDING, ChestDetector, PromptMatcher, scene_similarity, scene_thumb
 from protocol import format_delta
+from settings import quarantine_json, read_json_object
 from wheel import WheelListener
 
 log = logging.getLogger("chest-tracker")
 
-VK_F8, VK_BACK = 0x77, 0x08
+VK_F8, VK_BACK, VK_F10 = 0x77, 0x08, 0x79
 LOOKED_AWAY_BELOW = 0.5  # scene similarity under this means the aim left the chest
 NAMED_KEYS = {
+    "F10": VK_F10,
     "BACKSPACE": VK_BACK,
     "SPACE": 0x20, "SHIFT": 0x10, "CTRL": 0x11, "ALT": 0x12, "TAB": 0x09,
     "MOUSE1": 0x01, "MOUSE2": 0x02, "MOUSE3": 0x04, "MOUSE4": 0x05, "MOUSE5": 0x06,
@@ -44,6 +48,8 @@ user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
 
 
 def key_code(name: str) -> int:
+    if not isinstance(name, str):
+        raise ValueError("Key name must be text")
     name = name.strip().upper()
     if name in NAMED_KEYS:
         return NAMED_KEYS[name]
@@ -64,8 +70,9 @@ def _shared_wheel() -> WheelListener:
     # Windows gives raw input to one window per process, so there can only be one listener.
     global _wheel
     if _wheel is None:
-        _wheel = WheelListener()
-        _wheel.start()
+        candidate = WheelListener()
+        candidate.start()
+        _wheel = candidate
     return _wheel
 
 
@@ -179,8 +186,14 @@ class Sender:
         self.lock = threading.Lock()
         self.wake = threading.Event()
         self.pending = 0
-        if self.path.exists():
-            self.pending = int(json.loads(self.path.read_text())["pending"])
+        saved = read_json_object(self.path, "pending count")
+        if saved is not None:
+            amount = saved.get("pending")
+            if isinstance(amount, int) and not isinstance(amount, bool):
+                self.pending = amount
+            else:
+                log.warning("Ignoring invalid pending count and starting with an empty queue")
+                quarantine_json(self.path, "pending count")
 
     def add(self, amount: int) -> None:
         with self.lock:
@@ -201,11 +214,19 @@ class Sender:
             return 0.0
         if not self.url or not self.player:
             return 15.0
+        if not is_discord_webhook_url(self.url):
+            log.warning("Webhook URL rejected because it is not a valid Discord webhook URL")
+            self.on_result(False, "Use a Discord webhook URL from discord.com or discordapp.com.")
+            return 0.0
+        blocked_name = any(word in self.player.casefold() for word in ("discord", "clyde"))
         try:
             response = requests.post(
                 self.url,
                 params={"wait": "true"},
-                json={"username": self.player, "content": format_delta(amount)},
+                json={
+                    "username": "Chest Tracker" if blocked_name else self.player,
+                    "content": format_delta(amount, self.player if blocked_name else None),
+                },
                 timeout=10,
             )
         except requests.RequestException as error:
@@ -238,7 +259,7 @@ class Sender:
 
 def check_webhook(url: str) -> tuple[bool, str]:
     """Check a webhook exists without posting anything in the channel."""
-    if not url.startswith("https://") or "/api/webhooks/" not in url:
+    if not is_discord_webhook_url(url):
         return False, "That doesn't look like a Discord webhook URL."
     try:
         response = requests.get(url, timeout=10)
@@ -247,6 +268,29 @@ def check_webhook(url: str) -> tuple[bool, str]:
     if response.ok:
         return True, f'Connected to webhook "{response.json().get("name", "webhook")}".'
     return False, "Discord doesn't recognize this webhook. Copy the URL again."
+
+
+def is_discord_webhook_url(url: str) -> bool:
+    """Accept only HTTPS webhook URLs hosted by Discord."""
+    if not isinstance(url, str):
+        return False
+    try:
+        parsed = urlsplit(url.strip())
+        host = (parsed.hostname or "").lower()
+        allowed_host = (
+            host in {"discord.com", "discordapp.com"}
+            or host.endswith(".discord.com")
+            or host.endswith(".discordapp.com")
+        )
+        valid_path = re.fullmatch(r"/api/webhooks/\d+/[^/]+/?", parsed.path) is not None
+        valid_port = parsed.port in (None, 443)
+        return (
+            parsed.scheme == "https" and allowed_host and valid_path and valid_port
+            and parsed.username is None and parsed.password is None
+            and not parsed.query and not parsed.fragment
+        )
+    except ValueError:
+        return False
 
 
 class WatchEngine(threading.Thread):
@@ -265,7 +309,7 @@ class WatchEngine(threading.Thread):
         on_attempt: Callable[[str], None] = lambda event: None,
         focused: Callable[[], bool] = fortnite_focused,
         capture_factory=ScreenCapture,
-        remove_hotkey: int = VK_BACK,
+        remove_hotkey: int = VK_F10,
     ):
         super().__init__(daemon=True)
         self.matcher = matcher
@@ -297,6 +341,8 @@ class WatchEngine(threading.Thread):
         reference = None
         lowest_similarity = 1.0
         attempt_started = 0.0
+        attempt_prompt_score = 0.0
+        attempt_center_luma = 0.0
         last_score = 0.0
         black_since = None
         state = None
@@ -347,27 +393,33 @@ class WatchEngine(threading.Thread):
             blank = black_since is not None and now - black_since >= self.BLACK_SECONDS
             set_state("black" if blank else "watching")
 
-            score, prompt_location = self.matcher.best_match(frame)
+            score, _ = self.matcher.best_match(frame)
             thumb = scene_thumb(frame)
+            height, width = frame.shape[:2]
+            center = frame[int(height * 0.4):int(height * 0.6), int(width * 0.4):int(width * 0.6)]
+            center_luma = float(center.mean()) if center.size else 0.0
             similarity = scene_similarity(reference, thumb) if reference is not None else 1.0
             lowest_similarity = min(lowest_similarity, similarity)
             attempt_id = detector.attempt_id
             event = detector.update(
                 now, score >= self.matcher.threshold, self.interact_used(),
                 looked_away=similarity < LOOKED_AWAY_BELOW,
-                prompt_location=prompt_location if score >= self.matcher.threshold else None,
             )
             if event in (OPENED, CANCELLED):
                 # Real numbers from real play, for tuning the rules later.
                 log.info(
-                    "Attempt %s: %.2fs after pressing, lowest aim match %.2f",
-                    event, now - attempt_started, lowest_similarity,
+                    "Attempt %s: %.2fs after pressing, prompt match %.2f, "
+                    "lowest aim match %.2f, center brightness %.1f -> %.1f",
+                    event, now - attempt_started, attempt_prompt_score,
+                    lowest_similarity, attempt_center_luma, center_luma,
                 )
                 reference = None
             if detector.armed and detector.attempt_id != attempt_id:
                 reference = thumb
                 lowest_similarity = 1.0
                 attempt_started = now
+                attempt_prompt_score = score
+                attempt_center_luma = center_luma
             if event == OPENED:
                 self.on_chest(1, "detected")
             elif event in (PENDING, CANCELLED):

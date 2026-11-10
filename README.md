@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="docs/images/banner.png" alt="Chest Tracker: a scoreboard for every Fortnite chest your group really opens" width="100%">
+  <img src="assets/icon.png" alt="Chest Tracker chest logo" width="96">
 </p>
+
+<h1 align="center">Chest Tracker</h1>
 
 <p align="center">
   <a href="../../releases/latest/download/Chest-Tracker.exe"><b>Download for Windows</b></a>
@@ -11,21 +13,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Xxoris190/chest-tracker/actions/workflows/tests.yml"><img alt="Tests" src="https://github.com/Xxoris190/chest-tracker/actions/workflows/tests.yml/badge.svg"></a>
-  <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-2A1C3A?style=flat-square">
-  <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-2A1C3A?style=flat-square">
+  <a href=".github/workflows/tests.yml">Windows test workflow</a>
+  <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-202123?style=flat-square">
+  <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-202123?style=flat-square">
   <img alt="MIT license" src="https://img.shields.io/badge/License-MIT-F4B42A?style=flat-square">
 </p>
 
 Chest Tracker counts the Fortnite chests you open and can keep a shared leaderboard in Discord. It also works in local-only mode: counts stay on this PC and no Discord setup is needed.
 
 This fork is based on [Xxoris190/chest-tracker](https://github.com/Xxoris190/chest-tracker). The original project and its contributors retain their copyright; this fork keeps the original MIT license and notices.
-
-<p align="center">
-  <img src="docs/images/demo.gif" alt="The app's chest lifting its lid during a search, slamming shut on a cancel, then bursting with coins when a chest counts" width="85%">
-</p>
-
-<sub>Screenshots and this animation show sample data.</sub>
 
 ## What it does
 
@@ -54,29 +50,26 @@ To use the in-game overlay, open **Setup**, enable **Show the chest count over F
 
 Closing the window keeps it counting from the system tray. To exit, right-click the tray icon and select **Quit**.
 
-<p align="center">
-  <img src="docs/images/setup.png" alt="The Setup page with four completed steps and a live prompt match bar" width="49%">
-  <img src="docs/images/group.png" alt="The Group page with a leaderboard of four sample players" width="49%">
-</p>
-
 ## How a chest gets counted
 
-Fortnite has no official way to report chest opens, so the app works it out from the screen. A chest counts about 2 seconds after you search it, once all of these are true:
+Fortnite has no official way to report chest opens, so the app works it out from the screen. A chest normally counts after the SEARCH prompt has stayed gone for 3 seconds:
 
 1. The SEARCH prompt was on screen and you used your interact key.
 2. You kept aiming at the chest for the first second.
-3. The prompt stayed gone for the full 2 seconds.
+3. The prompt stayed gone for the full 3 seconds.
 
-If the same prompt returns in the same screen position, or you look away during that first second, the search is cancelled. If a new prompt appears elsewhere and you interact with it, the previous chest can be counted while the new chest starts its own check.
+If another SEARCH prompt appears after at least a second away and you interact after a clear camera turn, the app can count the previous chest and begin tracking the next one immediately. This fast path uses the changed game view and the new interaction; prompt position alone is not treated as proof.
 
-Counted one by mistake? Press **Backspace** while Fortnite is focused, or select **Remove last chest**. You can choose a different keyboard key in **Setup**. Players can't add chests by hand, but someone with Manage Server can use `/add` in Discord.
+If the prompt returns without a clear camera turn, or you look away during the first second, the search is cancelled.
+
+Counted one by mistake? Press **F10** while Fortnite is focused, or select **Remove last chest**. F10 is the default undo key; a saved Backspace default is updated automatically. You can choose a different keyboard key in **Setup**. Players can't add chests by hand, but someone with Manage Server can use `/add` in Discord.
 
 ### Known limits
 
 The app can't see inside the game, so these rules are strong evidence rather than proof.
 
 - Holding your aim past the first second and then cancelling could still count.
-- The rapid-open check relies on the next SEARCH prompt appearing at a different screen position. If the game places it too close to the prior position, the app treats it like a prompt returning on the same chest.
+- The rapid-open check is a heuristic based on a camera turn, a new interact press, and a minimum gap; unusual camera movement can still cause a mistaken count or cancellation.
 - The prompt only says SEARCH, so anything else with the same prompt, possibly including ammo boxes, can count.
 - Anyone with the webhook URL could post to the channel directly, so only share it with people you trust.
 - Controllers aren't supported yet.
@@ -104,7 +97,7 @@ Only one person in your group needs to do this. Everyone else only needs the sha
 
 **What the app does:** it takes screenshots while Fortnite is the active window and reads which keys and scroll input you use. It doesn't touch Fortnite's memory or files, and it doesn't press anything for you.
 
-**What it sends:** Discord is optional; if configured, the app sends your player name and chest count to your webhook. If you use Fortnite Stats, the app sends the player name and Fortnite-API key to Fortnite-API.com over HTTPS when you select **Refresh stats**. The key and most recent result are stored in the local settings file; the key is not sent to Discord. Screenshots stay in memory and are thrown away. The only image saved for detection is the small prompt picture you select, on your own PC.
+**What it sends:** Discord is optional; if configured, the app sends your player name and chest count to a Discord webhook. A numeric prompt match score, camera similarity, and center brightness are written to the local log for troubleshooting; screenshots stay in memory and are thrown away. If you use Fortnite Stats, the app sends the player name and Fortnite-API key to Fortnite-API.com over HTTPS when you select **Refresh stats**. The key and most recent result are stored in the local settings file; the key is not sent to Discord. The only image saved for detection is the small prompt picture you select, on your own PC.
 
 **Where your data lives:** your settings, API key, webhook URL and bot token are in `%APPDATA%\ChestTracker`, not in the `.exe`.
 
@@ -123,7 +116,7 @@ Only one person in your group needs to do this. Everyone else only needs the sha
 
 **It counts when no prompt is showing.** Drag the **Live match** marker up to about 0.85 or 0.9.
 
-**Something else is wrong.** Check the log at `%APPDATA%\ChestTracker\chest-tracker.log`. It's useful to include in a bug report, and it doesn't contain your token or webhook URL.
+**Something else is wrong.** Check the log at `%APPDATA%\ChestTracker\chest-tracker.log`. It records attempt timing and numeric visual measurements, not screenshots; review it before sharing.
 
 ## Build from source
 
@@ -149,7 +142,7 @@ Run the tests:
 .venv-app\Scripts\python.exe -m pytest
 ```
 
-Build `Chest Tracker.exe`:
+Build `Chest-Tracker.exe`:
 
 ```bash
 powershell -ExecutionPolicy Bypass -File build.ps1

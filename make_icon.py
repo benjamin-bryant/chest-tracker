@@ -16,7 +16,7 @@ def draw(size: int) -> QImage:
     p.scale(size / 64, size / 64)
 
     p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QColor("#2A1C3A"))
+    p.setBrush(QColor("#101112"))
     p.drawRoundedRect(QRectF(0, 0, 64, 64), 14, 14)
 
     outline = QPen(QColor("#2B1006"), 2.2)

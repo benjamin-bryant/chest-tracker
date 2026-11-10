@@ -29,7 +29,7 @@ from settings import Settings, Stats
 from store import Store
 from watcher import (
     VK_F8, KeyEdge, Sender, WatchEngine, capture_focused_screen, check_webhook, fortnite_focused,
-    foreground_window_bounds, interact_check, selection_too_big, key_code
+    foreground_window_bounds, interact_check, selection_too_big,
 )
 from widgets import (
     BONE, DUSK, EMBER, GOLD, LILAC, LINE, MINT, NIGHT, ChestStage, LeaderRow, MatchMeter, StepBadge, TallyMarks,
@@ -376,6 +376,7 @@ class PromptDialog(QDialog):
         self.hotkey = KeyEdge(VK_F8)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._poll)
+        self.finished.connect(self.timer.stop)
         self.timer.start(30)
 
     def showEvent(self, event) -> None:
@@ -684,7 +685,7 @@ class SetupPage(QWidget):
         self.capture.captured.connect(self._save_key)
         self.key_step.content.addWidget(self.capture)
         self.key_step.content.addWidget(label(
-            "Click to choose an undo key. It works only while Fortnite is focused; Backspace is the default.",
+            "Click to choose an undo key. It works only while Fortnite is focused; new setups default to F10.",
             "muted", wrap=True,
         ))
         self.remove_capture = KeyCapture(keyboard_only=True, action_label="undo key")
@@ -1044,14 +1045,20 @@ class FortniteStatsPage(QWidget):
         self._render_stats(result, cached=False)
 
     def _render_stats(self, result: dict, cached: bool) -> None:
-        account = result.get("account") or {}
-        stats = result.get("stats") or {}
-        overall = stats.get("overall") or {}
-        self.profile_title.setText(f"{account.get('name', 'Player')} · {result.get('time_window', 'lifetime').title()}")
+        account = result.get("account")
+        stats = result.get("stats")
+        account = account if isinstance(account, dict) else {}
+        stats = stats if isinstance(stats, dict) else {}
+        overall = stats.get("overall")
+        overall = overall if isinstance(overall, dict) else {}
+        time_window = result.get("time_window", "lifetime")
+        time_window = time_window if isinstance(time_window, str) else "lifetime"
+        self.profile_title.setText(f"{account.get('name', 'Player')} · {time_window.title()}")
         for key, _title in self.METRICS:
             self.overall_values[key].setText(self._format_stat(key, overall.get(key)))
         for mode, values in self.mode_values.items():
-            row = stats.get(mode) or {}
+            row = stats.get(mode)
+            row = row if isinstance(row, dict) else {}
             for key, value in values.items():
                 value.setText(self._format_stat(key, row.get(key)))
         self.status.setText("Showing saved stats." if cached else f"Updated {datetime.now():%Y-%m-%d %H:%M}.")
@@ -1333,15 +1340,16 @@ class MainWindow(QMainWindow):
         matcher = PromptMatcher.from_folder(self.templates_dir, self.settings["match_threshold"])
         try:
             interact = interact_check(self.settings["interact_keys"])
+            remove_code = key_code(self.settings["remove_key"])
         except (ValueError, RuntimeError) as error:
-            log.error("Interact key problem: %s", error)
-            self.tracker.log(f"Interact key problem: {error}", EMBER)
+            log.error("Input binding problem: %s", error)
+            self.tracker.log(f"Input binding problem: {error}", EMBER)
             self.set_state("setup")
             return
         self.engine = WatchEngine(
             matcher, interact, self.settings["search_area"],
             self.chest.emit, self.engine_state.emit, self.match_score.emit, self.attempt.emit,
-            remove_hotkey=key_code(self.settings["remove_key"]),
+            remove_hotkey=remove_code,
         )
         self.engine.start()
 
@@ -1375,11 +1383,15 @@ class MainWindow(QMainWindow):
             self.tracker.log("Search cancelled, not counted", LILAC)
 
     def record_chest(self, amount: int, source: str) -> None:
-        self.stats.add(amount)
+        if amount < 0 and self.stats.total <= 0:
+            return
+        applied = self.stats.add(amount)
+        if applied == 0:
+            return
         self.overlay.set_count(self.stats.total, celebrate=source == "detected" and amount > 0)
         # In local-only mode, don't queue counts for a Discord webhook that isn't configured.
         if self.settings["webhook_url"] and self.settings["player_name"]:
-            self.sender.add(amount)
+            self.sender.add(applied)
         self._show_stats()
         if source == "detected":
             self.tracker.stage.show_opened(self.stats.total)

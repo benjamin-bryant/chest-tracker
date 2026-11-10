@@ -4,7 +4,6 @@ import sys
 import threading
 import time
 from datetime import date, datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,10 +17,10 @@ from bot import ingest
 from detection import (
     CANCELLED, OPENED, PENDING, ChestDetector, PromptMatcher, scene_similarity, scene_thumb,
 )
-from protocol import format_delta, parse_delta
+from protocol import format_delta, parse_delta, parse_player
 from store import Store
 from settings import Settings, Stats, import_old_setup
-from watcher import Sender, WatchEngine, best_monitor, key_code, selection_too_big
+from watcher import Sender, WatchEngine, best_monitor, is_discord_webhook_url, key_code, selection_too_big
 from widgets import MatchMeter
 import watcher
 
@@ -96,56 +95,49 @@ def test_search_reports_pending_then_opened():
     assert [e for e in events if e] == [PENDING, OPENED]
 
 
-def test_quick_next_chest_at_a_new_prompt_position_counts_both():
+def test_quick_next_chest_after_camera_turn_counts_both():
     detector = ChestDetector()
-    chest_a = (0.40, 0.50)
-    chest_b = (0.68, 0.42)
     events = []
 
-    def update(now, visible, key=False, location=None):
-        event = detector.update(now, visible, key, prompt_location=location)
+    def update(now, visible, key=False, turned=False):
+        event = detector.update(now, visible, key, looked_away=turned)
         if event:
             events.append(event)
         return event
 
-    update(0.00, True, location=chest_a)
-    update(0.10, True, key=True, location=chest_a)
-    update(0.20, True, location=chest_a)
+    update(0.00, True)
+    update(0.10, True, key=True)
+    update(0.20, True)
     update(0.30, False)
     update(0.80, False)
-    update(1.20, True, location=chest_b)
-    assert update(1.25, True, key=True, location=chest_b) == OPENED
+    assert update(1.35, True, key=True, turned=True) == OPENED
     assert detector.armed  # the same press has started the second chest attempt
 
-    update(1.30, True, location=chest_b)
-    update(1.40, False)
-    update(1.85, False)
-    assert update(3.31, False) == OPENED
+    update(1.40, True)
+    update(1.50, False)
+    update(1.95, False)
+    assert update(4.51, False) == OPENED
     assert events == [PENDING, OPENED, PENDING, OPENED]
 
 
-def test_prompt_returning_at_same_position_still_cancels():
+def test_prompt_returning_after_a_camera_turn_without_interaction_cancels():
     detector = ChestDetector()
-    location = (0.45, 0.55)
-    detector.update(0.0, True, False, prompt_location=location)
-    detector.update(0.1, True, True, prompt_location=location)
+    detector.update(0.0, True, False)
+    detector.update(0.1, True, True)
     detector.update(0.2, False, False)
-    assert detector.update(0.8, True, False, prompt_location=location) == CANCELLED
+    assert detector.update(1.5, True, False, looked_away=True) == CANCELLED
 
 
-def test_new_prompt_position_remains_eligible_until_interact():
+def test_prompt_return_without_a_camera_turn_does_not_count_cancelled_search():
     detector = ChestDetector()
-    chest_a = (0.40, 0.50)
-    chest_b = (0.68, 0.42)
-    detector.update(0.0, True, False, prompt_location=chest_a)
-    detector.update(0.1, True, True, prompt_location=chest_a)
-    detector.update(0.2, True, False, prompt_location=chest_a)
+    detector.update(0.0, True, False)
+    detector.update(0.1, True, True)
+    detector.update(0.2, True, False)
     detector.update(0.3, False, False)
     detector.update(0.8, False, False)
-    detector.update(1.2, True, False, prompt_location=chest_b)
-    detector.update(1.8, True, False, prompt_location=chest_b)
-    assert detector.update(1.9, True, True, prompt_location=chest_b) == OPENED
+    assert detector.update(1.5, True, True) == CANCELLED
     assert detector.armed
+    assert detector.attempt_id == 2
 
 
 def test_two_chests_in_a_row_count_twice():
@@ -238,6 +230,8 @@ def test_match_meter_maps_the_full_sensitivity_range():
 def test_protocol_round_trip_and_rejects_other_text():
     assert parse_delta(format_delta(3)) == 3
     assert parse_delta(format_delta(-1)) == -1
+    assert parse_delta(format_delta(-1, "My Discord name")) == -1
+    assert parse_player(format_delta(-1, "My Discord name")) == "My Discord name"
     assert parse_delta("hello (+5)") is None
 
 
@@ -262,6 +256,11 @@ def test_ingest_counts_webhook_posts_once_and_ignores_others(store):
     assert not ingest(store, message(2, "Alex", format_delta(5), webhook_id=None))
     assert not ingest(store, message(3, "Alex", "just chatting"))
     assert store.total("Alex") == 2
+
+
+def test_ingest_keeps_reserved_player_name_from_fallback_message(store):
+    assert ingest(store, message(4, "Chest Tracker", format_delta(2, "Clyde")))
+    assert store.total("Clyde") == 2
 
 
 def test_totals_today_leaderboard_and_case_insensitive_names(store):
@@ -303,44 +302,38 @@ def test_calibration_rejects_big_selections_at_any_resolution():
 def test_unknown_key_is_rejected():
     with pytest.raises(ValueError):
         key_code("WHEELUP")
+    with pytest.raises(ValueError):
+        key_code(None)
 
 
-class FakeDiscord(BaseHTTPRequestHandler):
-    def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        self.server.bodies.append(body)
-        status, reply = self.server.replies.pop(0)
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(reply).encode())
-
-    def log_message(self, *args):
-        pass
+def test_webhook_urls_are_limited_to_discord_hosts():
+    assert is_discord_webhook_url("https://discord.com/api/webhooks/123/secret")
+    assert is_discord_webhook_url("https://canary.discord.com/api/webhooks/123/secret")
+    assert not is_discord_webhook_url("https://discord.com.example.net/api/webhooks/123/secret")
+    assert not is_discord_webhook_url("http://discord.com/api/webhooks/123/secret")
+    assert not is_discord_webhook_url("https://discord.com/api/webhooks/123/secret?x=1")
 
 
-@pytest.fixture
-def fake_discord():
-    server = HTTPServer(("127.0.0.1", 0), FakeDiscord)
-    server.bodies, server.replies = [], []
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    yield server
-    server.shutdown()
-
-
-def test_sender_delivers_and_clears_pending(fake_discord, tmp_path):
-    fake_discord.replies = [(200, {})]
-    sender = Sender(f"http://127.0.0.1:{fake_discord.server_port}", "Alex", tmp_path / "p.json")
+def test_sender_delivers_and_clears_pending(monkeypatch, tmp_path):
+    bodies = []
+    monkeypatch.setattr(watcher.requests, "post", lambda url, **kwargs: (
+        bodies.append(kwargs["json"]) or SimpleNamespace(status_code=200, ok=True, json=lambda: {})
+    ))
+    sender = Sender("https://discord.com/api/webhooks/123/token", "Alex", tmp_path / "p.json")
     sender.add(2)
     assert sender.send_once() == 0
-    assert fake_discord.bodies == [{"username": "Alex", "content": format_delta(2)}]
+    assert bodies == [{"username": "Alex", "content": format_delta(2)}]
     assert sender.pending == 0
 
 
-def test_sender_waits_when_rate_limited_and_keeps_counts_on_errors(fake_discord, tmp_path):
-    fake_discord.replies = [(429, {"retry_after": 2}), (404, {}), (200, {})]
-    sender = Sender(f"http://127.0.0.1:{fake_discord.server_port}", "Alex", tmp_path / "p.json")
+def test_sender_waits_when_rate_limited_and_keeps_counts_on_errors(monkeypatch, tmp_path):
+    replies = iter([
+        SimpleNamespace(status_code=429, ok=False, json=lambda: {"retry_after": 2}),
+        SimpleNamespace(status_code=404, ok=False, json=lambda: {}),
+        SimpleNamespace(status_code=200, ok=True, json=lambda: {}),
+    ])
+    monkeypatch.setattr(watcher.requests, "post", lambda *args, **kwargs: next(replies))
+    sender = Sender("https://discord.com/api/webhooks/123/token", "Alex", tmp_path / "p.json")
     sender.add(1)
     assert sender.send_once() == pytest.approx(2.1)
     assert sender.send_once() == 60
@@ -351,8 +344,56 @@ def test_sender_waits_when_rate_limited_and_keeps_counts_on_errors(fake_discord,
 
 def test_sender_keeps_pending_counts_across_restarts(tmp_path):
     path = tmp_path / "p.json"
-    Sender("http://127.0.0.1:9", "Alex", path).add(4)
-    assert Sender("http://127.0.0.1:9", "Alex", path).pending == 4
+    Sender("https://discord.com/api/webhooks/123/token", "Alex", path).add(4)
+    assert Sender("https://discord.com/api/webhooks/123/token", "Alex", path).pending == 4
+
+
+def test_sender_uses_safe_webhook_name_for_discord_reserved_words(monkeypatch, tmp_path):
+    bodies = []
+    monkeypatch.setattr(watcher.requests, "post", lambda url, **kwargs: (
+        bodies.append(kwargs["json"]) or SimpleNamespace(status_code=200, ok=True, json=lambda: {})
+    ))
+    sender = Sender("https://discord.com/api/webhooks/123/token", "My Discord", tmp_path / "p.json")
+    sender.add(1)
+    assert sender.send_once() == 0
+    assert bodies == [{
+        "username": "Chest Tracker",
+        "content": format_delta(1, "My Discord"),
+    }]
+
+
+def test_sender_does_not_send_to_non_discord_hosts(monkeypatch, tmp_path):
+    called = []
+    monkeypatch.setattr(watcher.requests, "post", lambda *args, **kwargs: called.append(True))
+    sender = Sender("https://example.com/api/webhooks/123/token", "Alex", tmp_path / "p.json")
+    sender.add(1)
+    assert sender.send_once() == 0
+    assert not called
+    assert sender.pending == 1
+
+
+def test_wheel_start_failure_does_not_cache_dead_listener(monkeypatch):
+    watcher._wheel = None
+    starts = []
+
+    class FirstFailureThenReady:
+        def start(self):
+            starts.append(True)
+            if len(starts) == 1:
+                raise RuntimeError("not ready")
+
+        def scrolled_up(self):
+            return False
+
+        def scrolled_down(self):
+            return False
+
+    monkeypatch.setattr(watcher, "WheelListener", FirstFailureThenReady)
+    with pytest.raises(RuntimeError):
+        watcher._shared_wheel()
+    assert watcher._wheel is None
+    assert isinstance(watcher._shared_wheel(), FirstFailureThenReady)
+    assert len(starts) == 2
 
 
 def test_best_monitor_follows_the_window():
@@ -367,9 +408,10 @@ def test_best_monitor_follows_the_window():
 
 def test_stats_add_clamp_persist_and_roll_over(tmp_path):
     stats = Stats(tmp_path)
-    stats.add(2)
-    stats.add(-5)
-    stats.add(3)
+    assert stats.add(-1) == 0
+    assert stats.add(2) == 2
+    assert stats.add(-5) == -2
+    assert stats.add(3) == 3
     assert (stats.total, stats.today, stats.session) == (3, 3, 3)
 
     reloaded = Stats(tmp_path)
@@ -384,9 +426,61 @@ def test_settings_save_and_keep_defaults(tmp_path):
     settings = Settings(tmp_path)
     assert settings["player_name"] == "Sam"
     assert settings["interact_keys"] == ["E"]
-    assert settings["remove_key"] == "BACKSPACE"
+    assert settings["remove_key"] == "F10"
     assert settings["overlay_enabled"] is False
     assert settings["overlay_position"] == [0.76, 0.06]
+    assert settings["fortnite_account_type"] == "epic"
+    assert settings["fortnite_stats_window"] == "lifetime"
+
+
+def test_corrupted_json_files_fall_back_and_are_preserved(tmp_path):
+    settings_path = tmp_path / "settings.json"
+    stats_path = tmp_path / "stats.json"
+    pending_path = tmp_path / "pending.json"
+    settings_path.write_text("{ broken", encoding="utf-8")
+    stats_path.write_text("not json", encoding="utf-8")
+    pending_path.write_text("[]", encoding="utf-8")
+
+    settings = Settings(tmp_path)
+    stats = Stats(tmp_path)
+    sender = Sender("https://discord.com/api/webhooks/123/token", "Alex", pending_path)
+
+    assert settings["remove_key"] == "F10"
+    assert stats.total == 0
+    assert sender.pending == 0
+    assert (tmp_path / "settings.json.corrupt").exists()
+    assert (tmp_path / "stats.json.corrupt").exists()
+    assert (tmp_path / "pending.json.corrupt").exists()
+
+
+def test_semantically_invalid_settings_use_safe_defaults(tmp_path):
+    (tmp_path / "settings.json").write_text(json.dumps({
+        "interact_keys": None,
+        "remove_key": 123,
+        "match_threshold": "high",
+        "search_area": [0.8, 0.8, 0.2, 0.2],
+        "overlay_position": ["left", 0.5],
+    }))
+    settings = Settings(tmp_path)
+    assert settings["interact_keys"] == ["E"]
+    assert settings["remove_key"] == "F10"
+    assert settings["match_threshold"] == 0.8
+    assert settings["search_area"] == [0.15, 0.15, 0.85, 0.95]
+    assert settings["overlay_position"] == [0.76, 0.06]
+
+
+def test_previous_default_undo_key_migrates_to_f10(tmp_path):
+    (tmp_path / "settings.json").write_text(json.dumps({"remove_key": "BACKSPACE"}))
+    assert Settings(tmp_path)["remove_key"] == "F10"
+
+
+def test_invalid_duplicate_undo_and_interact_keys_are_separated(tmp_path):
+    (tmp_path / "settings.json").write_text(json.dumps({
+        "interact_keys": ["F10"],
+        "remove_key": "F10",
+    }))
+    settings = Settings(tmp_path)
+    assert settings["remove_key"] == "F9"
 
 
 def make_old_setup(folder):
@@ -485,6 +579,27 @@ def run_engine(matcher, capture, interact, seconds, focused=lambda: True):
     engine.join(2)
     assert not engine.is_alive()
     return chests, states, attempts
+
+
+def test_remove_hotkey_is_ignored_outside_fortnite(monkeypatch):
+    template = np.full((20, 40), 30, dtype=np.uint8)
+
+    class Capture(FakeCapture):
+        frames = [np.zeros((100, 200), dtype=np.uint8)]
+
+    class AlwaysPressed:
+        def __init__(self, code):
+            pass
+
+        def pressed(self):
+            return True
+
+    monkeypatch.setattr(watcher, "KeyEdge", AlwaysPressed)
+    chests, _, _ = run_engine(
+        PromptMatcher([template], 0.8), Capture, lambda: False, 0.1,
+        focused=lambda: False,
+    )
+    assert chests == []
 
 
 def prompt_scenes():
