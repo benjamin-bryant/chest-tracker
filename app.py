@@ -32,10 +32,6 @@ def set_up_logging(folder: Path) -> None:
     logger = logging.getLogger("chest-tracker")
     logger.setLevel(logging.INFO)
     logger.addHandler(handler)
-    discord_logger = logging.getLogger("discord")
-    discord_logger.setLevel(logging.WARNING)
-    discord_logger.addHandler(handler)
-    discord_logger.propagate = False
     sys.excepthook = lambda kind, value, trace: logger.error(
         "Unhandled error", exc_info=(kind, value, trace)
     )

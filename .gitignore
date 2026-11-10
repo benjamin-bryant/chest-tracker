@@ -11,6 +11,7 @@ templates/
 build/
 dist/
 *.spec
+Chest-Tracker.exe
 Chest Tracker.exe
 __pycache__/
 .pytest_cache/

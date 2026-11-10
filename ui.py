@@ -25,14 +25,16 @@ from bot import BotRunner
 from detection import CANCELLED, PENDING, PromptMatcher
 from fortnite_stats import FortniteStatsError, fetch_stats
 from overlay import ChestOverlay
+from protocol import MAX_NAME_LENGTH, name_problem
 from settings import Settings, Stats
 from store import Store
 from watcher import (
-    VK_F8, KeyEdge, Sender, WatchEngine, capture_focused_screen, check_webhook, fortnite_focused,
-    foreground_window_bounds, interact_check, selection_too_big,
+    VK_F8, VK_F10, KeyEdge, Sender, WatchEngine, capture_focused_screen, check_webhook, fortnite_focused,
+    foreground_window_bounds, interact_check, selection_too_big, key_code
 )
 from widgets import (
-    BONE, DUSK, EMBER, GOLD, LILAC, LINE, MINT, NIGHT, ChestStage, LeaderRow, MatchMeter, StepBadge, TallyMarks,
+    ASH, BONE, DUSK, EMBER, GOLD, GOLD_DEEP, GOLD_LIGHT, LINE, MINT, NIGHT, RAISED,
+    ChestStage, LeaderRow, MatchMeter, StepBadge, TallyMarks,
 )
 
 log = logging.getLogger("chest-tracker")
@@ -44,17 +46,17 @@ QScrollArea {{ border: none; }}
 #topbar {{ background: {NIGHT}; border-bottom: 1px solid {LINE}; }}
 #brand {{ font-family: "Bahnschrift SemiBold Condensed"; font-size: 23px; }}
 #tab {{ background: transparent; border: none; border-bottom: 3px solid transparent; border-radius: 0;
-        padding: 16px 16px 13px 16px; color: {LILAC}; font-size: 15px; font-weight: 500; }}
+        padding: 16px 16px 13px 16px; color: {ASH}; font-size: 15px; font-weight: 500; }}
 #tab:hover {{ color: {BONE}; }}
 #tab:checked {{ color: {GOLD}; border-bottom-color: {GOLD}; }}
 #tab:focus {{ color: {BONE}; background: {DUSK}; }}
 #heading {{ font-family: "Bahnschrift SemiBold Condensed"; font-size: 36px; }}
 #subheading {{ font-family: "Bahnschrift SemiBold Condensed"; font-size: 21px; color: {BONE}; }}
-#muted {{ color: {LILAC}; }}
-#small {{ color: {LILAC}; font-size: 12px; }}
+#muted {{ color: {ASH}; }}
+#small {{ color: {ASH}; font-size: 12px; }}
 #rail {{ background: transparent; }}
 #statCard, #activityCard {{ background: {DUSK}; border: 1px solid {LINE}; border-radius: 12px; }}
-#cardTitle {{ color: {LILAC}; font-size: 12px; font-weight: 700; letter-spacing: 1px; }}
+#cardTitle {{ color: {ASH}; font-size: 12px; font-weight: 700; letter-spacing: 1px; }}
 #sessionCount {{ font-family: "Bahnschrift SemiBold Condensed"; font-size: 34px; color: {BONE}; }}
 #activityList {{ background: transparent; border: none; outline: none; }}
 #activityList::item {{ padding: 8px 0; border-bottom: 1px solid {LINE}; }}
@@ -64,23 +66,23 @@ QScrollArea {{ border: none; }}
 #pill {{ border: 1px solid {LINE}; border-radius: 14px; min-height: 18px; padding: 4px 12px; font-size: 13px; }}
 QLineEdit {{ background: {NIGHT}; border: 1px solid {LINE}; border-radius: 5px; padding: 9px 11px;
              selection-background-color: {GOLD}; selection-color: {NIGHT}; }}
-QLineEdit:hover {{ border-color: {LILAC}; }}
+QLineEdit:hover {{ border-color: {ASH}; }}
 QLineEdit:focus {{ border: 1px solid {GOLD}; }}
 QComboBox {{ background: {NIGHT}; border: 1px solid {LINE}; border-radius: 5px; padding: 8px 10px; min-height: 20px; }}
-QComboBox:hover {{ border-color: {LILAC}; }}
+QComboBox:hover {{ border-color: {ASH}; }}
 QComboBox:focus {{ border: 1px solid {GOLD}; }}
 QComboBox::drop-down {{ border: none; width: 24px; }}
-QComboBox QAbstractItemView {{ background: {DUSK}; border: 1px solid {LINE}; selection-background-color: #3A3426; }}
+QComboBox QAbstractItemView {{ background: {DUSK}; border: 1px solid {LINE}; selection-background-color: #2E2916; }}
 QPushButton {{ background: {DUSK}; border: 1px solid {LINE}; border-radius: 5px; padding: 9px 15px; font-weight: 500; }}
-QPushButton:hover {{ background: #2B2C2F; border-color: {LILAC}; }}
+QPushButton:hover {{ background: {RAISED}; border-color: {ASH}; }}
 QPushButton:pressed {{ background: {NIGHT}; }}
 QPushButton:focus {{ border: 1px solid {GOLD}; }}
-QPushButton:disabled {{ color: #77797D; background: {NIGHT}; border-color: {DUSK}; }}
+QPushButton:disabled {{ color: #6C6B67; background: {NIGHT}; border-color: {DUSK}; }}
 #primary {{ background: {GOLD}; color: {NIGHT}; border: 1px solid {GOLD}; font-weight: 600; }}
-#primary:hover {{ background: #E4C46F; border-color: #E4C46F; }}
-#primary:pressed {{ background: #B8953E; }}
+#primary:hover {{ background: {GOLD_LIGHT}; border-color: {GOLD_LIGHT}; }}
+#primary:pressed {{ background: {GOLD_DEEP}; border-color: {GOLD_DEEP}; color: {BONE}; }}
 #primary:focus {{ border: 2px solid {BONE}; }}
-#primary:disabled {{ background: #3C3D3F; color: #A5A7AB; border-color: #3C3D3F; }}
+#primary:disabled {{ background: #2A2A2D; color: {ASH}; border-color: #2A2A2D; }}
 #capture {{ text-align: left; padding: 12px 15px; font-family: "Bahnschrift SemiBold Condensed"; font-size: 19px; }}
 #capture[listening="true"] {{ border: 1px solid {GOLD}; color: {GOLD}; background: {NIGHT}; }}
 #step {{ background: transparent; }}
@@ -88,7 +90,7 @@ QPushButton:disabled {{ color: #77797D; background: {NIGHT}; border-color: {DUSK
                font-family: "Bahnschrift SemiBold Condensed"; font-size: 21px; }}
 #stepHeader:hover {{ background: {DUSK}; }}
 #stepHeader:focus {{ background: {DUSK}; color: {GOLD}; }}
-#disclosure {{ background: transparent; border: none; text-align: left; padding: 6px 0; color: {LILAC}; }}
+#disclosure {{ background: transparent; border: none; text-align: left; padding: 6px 0; color: {ASH}; }}
 #disclosure:hover {{ color: {BONE}; }}
 #disclosure:focus {{ color: {GOLD}; }}
 #promptThumb {{ background: {NIGHT}; border: 1px solid {LINE}; border-radius: 5px; padding: 8px; }}
@@ -96,7 +98,7 @@ QListWidget {{ background: transparent; border: none; outline: none; }}
 QListWidget::item {{ padding: 6px 0; border: none; }}
 QListWidget::item:selected {{ background: transparent; }}
 QCheckBox {{ spacing: 9px; }}
-QCheckBox::indicator {{ width: 17px; height: 17px; border: 1px solid {LILAC}; border-radius: 4px; background: {NIGHT}; }}
+QCheckBox::indicator {{ width: 17px; height: 17px; border: 1px solid {ASH}; border-radius: 4px; background: {NIGHT}; }}
 QCheckBox::indicator:checked {{ background: {GOLD}; border-color: {GOLD}; }}
 QCheckBox:focus {{ color: {GOLD}; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; }}
@@ -105,14 +107,14 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
 QMenu {{ background: {DUSK}; border: 1px solid {LINE}; padding: 4px; }}
 QMenu::item {{ padding: 7px 24px; border-radius: 4px; }}
-QMenu::item:selected {{ background: #2B2C2F; }}
+QMenu::item:selected {{ background: {RAISED}; }}
 QToolTip {{ background: {DUSK}; color: {BONE}; border: 1px solid {LINE}; padding: 4px; }}
 """
 
 STATES = {
-    "off": (LILAC, "Paused"),
+    "off": (ASH, "Paused"),
     "setup": (GOLD, "Setup isn't finished"),
-    "waiting": (LILAC, "Waiting for Fortnite"),
+    "waiting": (ASH, "Waiting for Fortnite"),
     "watching": (MINT, "Watching for chests"),
     "black": (EMBER, "Can't see the game"),
 }
@@ -376,15 +378,20 @@ class PromptDialog(QDialog):
         self.hotkey = KeyEdge(VK_F8)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._poll)
-        self.finished.connect(self.timer.stop)
         self.timer.start(30)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
         dark_title_bar(self)
 
+    def done(self, result: int) -> None:
+        # Cancel, Save or the window's X: either way, stop watching for F8. Otherwise the
+        # hidden dialog stays alive and pops back up the next time F8 is pressed in game.
+        self.timer.stop()
+        super().done(result)
+
     def _poll(self) -> None:
-        if not self.hotkey.pressed():
+        if not self.isVisible() or not self.hotkey.pressed():
             return
         if not fortnite_focused():
             self.status.setText("Fortnite wasn't the active window. Click into the game and press F8 again.")
@@ -534,7 +541,7 @@ class TrackerPage(QWidget):
         self.activity.setWordWrap(True)
         activity_layout.addWidget(self.activity, 1)
         self.empty = QListWidgetItem("Open a chest in Fortnite and it appears here.")
-        self.empty.setForeground(QColor(LILAC))
+        self.empty.setForeground(QColor(ASH))
         self.activity.addItem(self.empty)
         side.addWidget(activity_card, 1)
 
@@ -648,9 +655,12 @@ class SetupPage(QWidget):
         ))
         self.name = QLineEdit(settings["player_name"])
         self.name.setPlaceholderText("Player name")
-        self.name.setMaxLength(32)
+        self.name.setMaxLength(MAX_NAME_LENGTH)
         self.name.editingFinished.connect(self._save_name)
         self.name_step.content.addWidget(self.name)
+        self.name_status = label("", "small", wrap=True)
+        self.name_status.hide()
+        self.name_step.content.addWidget(self.name_status)
 
         self.webhook_step = Step(2, "Discord channel link")
         self.webhook_step.content.addWidget(label(
@@ -685,7 +695,7 @@ class SetupPage(QWidget):
         self.capture.captured.connect(self._save_key)
         self.key_step.content.addWidget(self.capture)
         self.key_step.content.addWidget(label(
-            "Click to choose an undo key. It works only while Fortnite is focused; new setups default to F10.",
+            "Click to choose an undo key. It works only while Fortnite is focused; F10 is the default.",
             "muted", wrap=True,
         ))
         self.remove_capture = KeyCapture(keyboard_only=True, action_label="undo key")
@@ -746,6 +756,7 @@ class SetupPage(QWidget):
         layout.addStretch(1)
         self.refresh_gallery()
         self.refresh_steps()
+        self._show_name_problem(name_problem(settings["player_name"]))
         self._open_step(next((s for s in self.steps if not s.done), self.prompt_step))
 
     def _open_step(self, chosen: Step) -> None:
@@ -806,13 +817,24 @@ class SetupPage(QWidget):
 
     def _calibrate(self) -> None:
         dialog = PromptDialog(self, self.window_.templates_dir, self.window_.settings["search_area"])
-        if dialog.exec():
+        saved = dialog.exec()
+        dialog.deleteLater()
+        if saved:
             self.refresh_gallery()
             self.refresh_steps()
             self.window_.restart_engine()
 
+    def _show_name_problem(self, problem: str | None) -> None:
+        self.name_status.setVisible(bool(problem))
+        if problem:
+            self.name_status.setText(f'<span style="color:{EMBER}">{problem}</span>')
+
     def _save_name(self) -> None:
         name = self.name.text().strip()
+        problem = name_problem(name)
+        self._show_name_problem(problem)
+        if problem:  # Discord would refuse every post under this name, so don't keep it
+            return
         if name != self.window_.settings["player_name"]:
             self.window_.settings.set(player_name=name)
             self.refresh_steps()
@@ -841,6 +863,18 @@ class SetupPage(QWidget):
             self.remove_capture.set_key(self.window_.settings["remove_key"])
             QMessageBox.warning(self, "Keys must be different", "Choose a different key for interact and undo.")
             return
+        if name == "BACKSPACE" or len(name) == 1 or name == "SPACE":
+            # Typing in Fortnite (chat, search boxes, party names) would remove chests.
+            answer = QMessageBox.question(
+                self, "This key is used for typing",
+                f"{key_label(name)} is pressed while typing in Fortnite, so chat or a search box could "
+                "remove chests by accident. Use it anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self.remove_capture.set_key(self.window_.settings["remove_key"])
+                return
         self.window_.settings.set(remove_key=name)
         self.refresh_steps()
         self.window_.restart_engine()
@@ -1045,20 +1079,14 @@ class FortniteStatsPage(QWidget):
         self._render_stats(result, cached=False)
 
     def _render_stats(self, result: dict, cached: bool) -> None:
-        account = result.get("account")
-        stats = result.get("stats")
-        account = account if isinstance(account, dict) else {}
-        stats = stats if isinstance(stats, dict) else {}
-        overall = stats.get("overall")
-        overall = overall if isinstance(overall, dict) else {}
-        time_window = result.get("time_window", "lifetime")
-        time_window = time_window if isinstance(time_window, str) else "lifetime"
-        self.profile_title.setText(f"{account.get('name', 'Player')} · {time_window.title()}")
+        account = result.get("account") or {}
+        stats = result.get("stats") or {}
+        overall = stats.get("overall") or {}
+        self.profile_title.setText(f"{account.get('name', 'Player')} · {result.get('time_window', 'lifetime').title()}")
         for key, _title in self.METRICS:
             self.overall_values[key].setText(self._format_stat(key, overall.get(key)))
         for mode, values in self.mode_values.items():
-            row = stats.get(mode)
-            row = row if isinstance(row, dict) else {}
+            row = stats.get(mode) or {}
             for key, value in values.items():
                 value.setText(self._format_stat(key, row.get(key)))
         self.status.setText("Showing saved stats." if cached else f"Updated {datetime.now():%Y-%m-%d %H:%M}.")
@@ -1103,7 +1131,7 @@ class GroupPage(QWidget):
         bot_row.addWidget(self.disclosure)
         bot_row.addStretch(1)
         self.pill = Pill()
-        self.pill.show_state(LILAC, "Bot off")
+        self.pill.show_state(ASH, "Bot off")
         bot_row.addWidget(self.pill)
         layout.addLayout(bot_row)
 
@@ -1337,13 +1365,21 @@ class MainWindow(QMainWindow):
         if self.paused:
             self.set_state("off")
             return
-        matcher = PromptMatcher.from_folder(self.templates_dir, self.settings["match_threshold"])
+        threshold = min(0.99, max(0.5, float(self.settings["match_threshold"])))  # the meter's range
+        matcher = PromptMatcher.from_folder(self.templates_dir, threshold)
+        try:
+            remove_code = key_code(self.settings["remove_key"])
+        except ValueError as error:
+            log.error("Undo key problem: %s. Using F10.", error)
+            self.settings.set(remove_key="F10")
+            self.setup.remove_capture.set_key("F10")
+            self.setup.refresh_steps()
+            remove_code = VK_F10
         try:
             interact = interact_check(self.settings["interact_keys"])
-            remove_code = key_code(self.settings["remove_key"])
         except (ValueError, RuntimeError) as error:
-            log.error("Input binding problem: %s", error)
-            self.tracker.log(f"Input binding problem: {error}", EMBER)
+            log.error("Interact key problem: %s", error)
+            self.tracker.log(f"Interact key problem: {error}", EMBER)
             self.set_state("setup")
             return
         self.engine = WatchEngine(
@@ -1380,25 +1416,24 @@ class MainWindow(QMainWindow):
             self.tracker.stage.show_pending()
         elif event == CANCELLED:
             self.tracker.stage.show_cancelled()
-            self.tracker.log("Search cancelled, not counted", LILAC)
+            self.tracker.log("Search cancelled, not counted", ASH)
 
     def record_chest(self, amount: int, source: str) -> None:
-        if amount < 0 and self.stats.total <= 0:
-            return
-        applied = self.stats.add(amount)
-        if applied == 0:
-            return
-        self.overlay.set_count(self.stats.total, celebrate=source == "detected" and amount > 0)
-        # In local-only mode, don't queue counts for a Discord webhook that isn't configured.
-        if self.settings["webhook_url"] and self.settings["player_name"]:
-            self.sender.add(applied)
+        changed = self.stats.add(amount)  # 0 when there was nothing left to take off
+        self.overlay.set_count(self.stats.total, celebrate=source == "detected" and changed > 0)
+        # Only share what really changed, and only if Discord sharing is set up. Sending a
+        # -1 for a chest that was never counted would push the group total below the truth.
+        if changed and self.settings["webhook_url"] and self.settings["player_name"]:
+            self.sender.add(changed)
         self._show_stats()
         if source == "detected":
             self.tracker.stage.show_opened(self.stats.total)
             self.tracker.log("Chest opened", GOLD)
-        else:
+        elif changed:
             self.tracker.stage.set_count(self.stats.total)
-            self.tracker.log("Removed a chest", LILAC)
+            self.tracker.log("Removed a chest", ASH)
+        else:
+            self.tracker.log("Nothing to remove, the count is already 0", ASH)
 
     def toggle_pause(self) -> None:
         self.paused = not self.paused
@@ -1502,7 +1537,7 @@ class MainWindow(QMainWindow):
 
     def _on_bot_status(self, status: str, message: str) -> None:
         page = self.group
-        color = {"running": MINT, "starting": GOLD, "problem": EMBER, "error": EMBER}.get(status, LILAC)
+        color = {"running": MINT, "starting": GOLD, "problem": EMBER, "error": EMBER}.get(status, ASH)
         text = {"running": "Bot online", "starting": "Bot connecting", "problem": "Bot problem", "error": "Bot problem"}.get(status, "Bot off")
         page.pill.show_state(color, text)
         page.message.setText(message)

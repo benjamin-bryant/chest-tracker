@@ -1,26 +1,28 @@
-name: Build and release
+name: Release
 
+# Push a tag like v1.0.0 and this builds Chest-Tracker.exe and publishes it as a GitHub release.
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
 
 permissions:
   contents: write
 
 jobs:
-  release:
+  build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install -r requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q
+        env:
+          QT_QPA_PLATFORM: offscreen
       - run: powershell -ExecutionPolicy Bypass -File build.ps1
-      - name: Publish the Windows executable
-        shell: pwsh
+      - name: Publish the release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create $env:GITHUB_REF_NAME ./Chest-Tracker.exe --generate-notes
+        run: gh release create "${{ github.ref_name }}" Chest-Tracker.exe --generate-notes --title "${{ github.ref_name }}"

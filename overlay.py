@@ -7,7 +7,7 @@ from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
-from widgets import BONE, DUSK, GOLD, LINE, MINT
+from widgets import ASH, BONE, DUSK, GOLD, GOLD_LIGHT, LINE, MINT
 
 
 class ChestOverlay(QWidget):
@@ -39,7 +39,7 @@ class ChestOverlay(QWidget):
     def set_count(self, count: int, celebrate: bool = False) -> None:
         self.count = count
         if celebrate:
-            colors = [QColor(GOLD), QColor(MINT), QColor(BONE), QColor("#B8BBC0")]
+            colors = [QColor(GOLD), QColor(GOLD_LIGHT), QColor(BONE), QColor(ASH)]
             for _ in range(24):
                 self._particles.append([
                     random.uniform(20, self.width() - 20),
@@ -52,6 +52,25 @@ class ChestOverlay(QWidget):
             self._flash = 1.0
             self._timer.start()
         self.update()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._hide_from_screen_capture()
+
+    def _hide_from_screen_capture(self) -> None:
+        """Keep the badge out of screenshots, so the tracker never mistakes it for part of the game.
+
+        The tracker reads the screen to find the SEARCH prompt. Without this, a badge dragged
+        over the middle of the screen would be part of every frame it checks. Needs Windows 10
+        version 2004 or newer; on older versions the call fails and nothing changes.
+        """
+        try:
+            WDA_EXCLUDEFROMCAPTURE = 0x00000011
+            display_affinity = ctypes.windll.user32.SetWindowDisplayAffinity
+            display_affinity.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            display_affinity(int(self.winId()), WDA_EXCLUDEFROMCAPTURE)
+        except (AttributeError, OSError):
+            pass
 
     def set_click_through(self, enabled: bool) -> None:
         """Use Windows extended styles so mouse input passes through the overlay."""
@@ -118,7 +137,7 @@ class ChestOverlay(QWidget):
 
         if self._flash > 0:
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(244, 180, 42, int(self._flash * 70)))
+            painter.setBrush(QColor(212, 175, 55, int(self._flash * 70)))
             painter.drawRoundedRect(self.rect().adjusted(2, 2, -2, -2), 12, 12)
         for x, y, _vx, _vy, life, color in self._particles:
             painter.setPen(Qt.PenStyle.NoPen)

@@ -8,13 +8,11 @@ Fortnite's memory or files, and screenshots are never saved or sent anywhere
 import ctypes
 import json
 import logging
-import re
 import threading
 import time
 from collections.abc import Callable
 from ctypes import wintypes
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import cv2
 import mss
@@ -22,16 +20,15 @@ import numpy as np
 import requests
 
 from detection import CANCELLED, OPENED, PENDING, ChestDetector, PromptMatcher, scene_similarity, scene_thumb
-from protocol import format_delta
-from settings import quarantine_json, read_json_object
+from protocol import format_delta, is_webhook_url
+from settings import read_json
 from wheel import WheelListener
 
 log = logging.getLogger("chest-tracker")
 
-VK_F8, VK_BACK, VK_F10 = 0x77, 0x08, 0x79
+VK_F8, VK_F10, VK_BACK = 0x77, 0x79, 0x08
 LOOKED_AWAY_BELOW = 0.5  # scene similarity under this means the aim left the chest
 NAMED_KEYS = {
-    "F10": VK_F10,
     "BACKSPACE": VK_BACK,
     "SPACE": 0x20, "SHIFT": 0x10, "CTRL": 0x11, "ALT": 0x12, "TAB": 0x09,
     "MOUSE1": 0x01, "MOUSE2": 0x02, "MOUSE3": 0x04, "MOUSE4": 0x05, "MOUSE5": 0x06,
@@ -48,8 +45,6 @@ user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
 
 
 def key_code(name: str) -> int:
-    if not isinstance(name, str):
-        raise ValueError("Key name must be text")
     name = name.strip().upper()
     if name in NAMED_KEYS:
         return NAMED_KEYS[name]
@@ -70,9 +65,9 @@ def _shared_wheel() -> WheelListener:
     # Windows gives raw input to one window per process, so there can only be one listener.
     global _wheel
     if _wheel is None:
-        candidate = WheelListener()
-        candidate.start()
-        _wheel = candidate
+        listener = WheelListener()
+        listener.start()  # raises if Windows refuses; then the next try starts fresh
+        _wheel = listener
     return _wheel
 
 
@@ -186,14 +181,12 @@ class Sender:
         self.lock = threading.Lock()
         self.wake = threading.Event()
         self.pending = 0
-        saved = read_json_object(self.path, "pending count")
-        if saved is not None:
-            amount = saved.get("pending")
-            if isinstance(amount, int) and not isinstance(amount, bool):
-                self.pending = amount
-            else:
-                log.warning("Ignoring invalid pending count and starting with an empty queue")
-                quarantine_json(self.path, "pending count")
+        saved = read_json(self.path)
+        if saved:
+            try:
+                self.pending = int(saved["pending"])
+            except (KeyError, TypeError, ValueError):
+                self.pending = 0
 
     def add(self, amount: int) -> None:
         with self.lock:
@@ -214,36 +207,46 @@ class Sender:
             return 0.0
         if not self.url or not self.player:
             return 15.0
-        if not is_discord_webhook_url(self.url):
-            log.warning("Webhook URL rejected because it is not a valid Discord webhook URL")
-            self.on_result(False, "Use a Discord webhook URL from discord.com or discordapp.com.")
-            return 0.0
-        blocked_name = any(word in self.player.casefold() for word in ("discord", "clyde"))
         try:
             response = requests.post(
                 self.url,
                 params={"wait": "true"},
-                json={
-                    "username": "Chest Tracker" if blocked_name else self.player,
-                    "content": format_delta(amount, self.player if blocked_name else None),
-                },
+                json={"username": self.player, "content": format_delta(amount)},
                 timeout=10,
+                allow_redirects=False,
             )
         except requests.RequestException as error:
             log.warning("Can't reach Discord: %s", error.__class__.__name__)
             self.on_result(False, "Can't reach Discord. Will keep trying.")
             return 15.0
         if response.status_code == 429:
-            return float(response.json().get("retry_after", 5)) + 0.1
+            try:
+                wait = float(response.json().get("retry_after", 5))
+            except (ValueError, AttributeError):
+                wait = 5.0
+            return wait + 0.1
         if not response.ok:
             log.warning("Discord refused the message: HTTP %s", response.status_code)
-            self.on_result(False, f"Discord refused the post ({response.status_code}). Check the webhook.")
+            self.on_result(False, self._refusal_message(response))
             return 60.0
         with self.lock:
             self.pending -= amount
             self._save()
         self.on_result(True, "")
         return 0.0
+
+    @staticmethod
+    def _refusal_message(response) -> str:
+        if response.status_code == 400:
+            try:
+                body = response.json()
+            except ValueError:
+                body = {}
+            if isinstance(body, dict) and "username" in body:
+                return "Discord rejected your player name. Pick another one in Setup."
+        if response.status_code in (401, 403, 404):
+            return "Discord doesn't accept this webhook any more. Copy a fresh link in Setup."
+        return f"Discord refused the post ({response.status_code}). Check the webhook."
 
     def run_forever(self) -> None:
         while True:
@@ -259,38 +262,15 @@ class Sender:
 
 def check_webhook(url: str) -> tuple[bool, str]:
     """Check a webhook exists without posting anything in the channel."""
-    if not is_discord_webhook_url(url):
+    if not is_webhook_url(url):
         return False, "That doesn't look like a Discord webhook URL."
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=10, allow_redirects=False)
     except requests.RequestException:
         return False, "Couldn't reach Discord. Check your internet connection."
     if response.ok:
         return True, f'Connected to webhook "{response.json().get("name", "webhook")}".'
     return False, "Discord doesn't recognize this webhook. Copy the URL again."
-
-
-def is_discord_webhook_url(url: str) -> bool:
-    """Accept only HTTPS webhook URLs hosted by Discord."""
-    if not isinstance(url, str):
-        return False
-    try:
-        parsed = urlsplit(url.strip())
-        host = (parsed.hostname or "").lower()
-        allowed_host = (
-            host in {"discord.com", "discordapp.com"}
-            or host.endswith(".discord.com")
-            or host.endswith(".discordapp.com")
-        )
-        valid_path = re.fullmatch(r"/api/webhooks/\d+/[^/]+/?", parsed.path) is not None
-        valid_port = parsed.port in (None, 443)
-        return (
-            parsed.scheme == "https" and allowed_host and valid_path and valid_port
-            and parsed.username is None and parsed.password is None
-            and not parsed.query and not parsed.fragment
-        )
-    except ValueError:
-        return False
 
 
 class WatchEngine(threading.Thread):
@@ -341,8 +321,9 @@ class WatchEngine(threading.Thread):
         reference = None
         lowest_similarity = 1.0
         attempt_started = 0.0
-        attempt_prompt_score = 0.0
-        attempt_center_luma = 0.0
+        last_key_at = 0.0
+        last_prompt_at = 0.0
+        last_count_at: float | None = None
         last_score = 0.0
         black_since = None
         state = None
@@ -357,6 +338,9 @@ class WatchEngine(threading.Thread):
             focused = self.focused()
             # Always sample the key, but only act on a fresh press in Fortnite.
             if remove_one.pressed() and focused:
+                if last_count_at is not None:
+                    # A quick undo after a count usually means it wasn't a chest: useful when tuning.
+                    log.info("Undo pressed %.1fs after the last counted chest", time.monotonic() - last_count_at)
                 self.on_chest(-1, "hotkey")
 
             if focused != was_focused:
@@ -393,34 +377,35 @@ class WatchEngine(threading.Thread):
             blank = black_since is not None and now - black_since >= self.BLACK_SECONDS
             set_state("black" if blank else "watching")
 
-            score, _ = self.matcher.best_match(frame)
+            score = self.matcher.best_score(frame)
+            seen = score >= self.matcher.threshold
+            if seen:
+                last_prompt_at = now
             thumb = scene_thumb(frame)
-            height, width = frame.shape[:2]
-            center = frame[int(height * 0.4):int(height * 0.6), int(width * 0.4):int(width * 0.6)]
-            center_luma = float(center.mean()) if center.size else 0.0
             similarity = scene_similarity(reference, thumb) if reference is not None else 1.0
             lowest_similarity = min(lowest_similarity, similarity)
             attempt_id = detector.attempt_id
+            pressed = self.interact_used()
+            if pressed:
+                last_key_at = now
             event = detector.update(
-                now, score >= self.matcher.threshold, self.interact_used(),
-                looked_away=similarity < LOOKED_AWAY_BELOW,
+                now, seen, pressed, looked_away=similarity < LOOKED_AWAY_BELOW,
             )
             if event in (OPENED, CANCELLED):
-                # Real numbers from real play, for tuning the rules later.
+                # Real numbers from real play, for telling chests from look-alikes later.
                 log.info(
-                    "Attempt %s: %.2fs after pressing, prompt match %.2f, "
-                    "lowest aim match %.2f, center brightness %.1f -> %.1f",
-                    event, now - attempt_started, attempt_prompt_score,
-                    lowest_similarity, attempt_center_luma, center_luma,
+                    "Attempt %s: %.2fs after pressing, key used for %.2fs, prompt gone %.2fs, "
+                    "lowest aim match %.2f, final match %.2f",
+                    event, now - attempt_started, max(0.0, last_key_at - attempt_started),
+                    max(0.0, now - last_prompt_at), lowest_similarity, score,
                 )
                 reference = None
             if detector.armed and detector.attempt_id != attempt_id:
                 reference = thumb
                 lowest_similarity = 1.0
                 attempt_started = now
-                attempt_prompt_score = score
-                attempt_center_luma = center_luma
             if event == OPENED:
+                last_count_at = now
                 self.on_chest(1, "detected")
             elif event in (PENDING, CANCELLED):
                 self.on_attempt(event)

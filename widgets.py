@@ -12,14 +12,19 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-NIGHT = "#101112"
-DUSK = "#202123"
-LINE = "#3B3C3F"
-GOLD = "#D6AE4F"
-EMBER = "#D95F45"
-BONE = "#F2F2EE"
-LILAC = "#A5A7AB"
-MINT = "#69C7A0"
+# Black, dark grey, gold and warm off-white. MINT and EMBER are only for "working" and "problem".
+NIGHT = "#0A0A0B"  # page background
+DUSK = "#161618"  # cards and panels
+RAISED = "#1F2023"  # hovered buttons and menu items
+LINE = "#2E2F33"  # borders
+GOLD = "#D4AF37"
+GOLD_LIGHT = "#F0D98A"  # highlights
+GOLD_DEEP = "#8A6D1B"  # pressed states and coin edges
+BONE = "#F5F1E6"  # main text
+ASH = "#A2A09A"  # secondary text
+MINT = "#6FCF97"
+EMBER = "#E5604A"
+INK = "#050505"  # outlines and the chest's dark body
 
 
 def display_font(size: float, weight: str = "SemiBold") -> QFont:
@@ -203,7 +208,7 @@ class ChestStage(QWidget):
         color = QColor(GOLD)
         color.setAlphaF(strength)
         glow.setColorAt(0, color)
-        glow.setColorAt(1, QColor(16, 17, 18, 0))
+        glow.setColorAt(1, QColor(10, 10, 11, 0))
         card = QRectF(self.rect()).adjusted(1, 1, -1, -1)
         shape = QPainterPath()
         shape.addRoundedRect(card, 18, 18)
@@ -257,14 +262,14 @@ class ChestStage(QWidget):
         lid_gap = lid_height * 0.72 * math.sin(min(angle, math.pi / 2))
         lid_bottom = body_top - lid_gap
         face = lid_height * math.cos(angle)
-        outline = QPen(QColor("#2B1006"), width * 0.016)
+        outline = QPen(QColor(INK), width * 0.016)
         outline.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
 
         # The inside of the chest shows behind the lifting lid.
         if openness > 0.02:
             p.setPen(outline)
             mouth = QLinearGradient(0, lid_bottom, 0, body_top)
-            mouth.setColorAt(0, QColor("#47210E"))
+            mouth.setColorAt(0, QColor("#1B1506"))
             mouth.setColorAt(1, QColor(GOLD))
             p.setBrush(QBrush(mouth))
             p.drawRect(QRectF(center - half * 0.96, lid_bottom, width * 0.96, body_top - lid_bottom + width * 0.02))
@@ -283,14 +288,14 @@ class ChestStage(QWidget):
             lid.lineTo(center + half, lid_bottom)
             lid.closeSubpath()
             shade = QLinearGradient(0, lid_bottom - face, 0, lid_bottom)
-            shade.setColorAt(0, QColor("#F08A55"))
-            shade.setColorAt(1, QColor("#C4471F"))
+            shade.setColorAt(0, QColor("#3B3B41"))
+            shade.setColorAt(1, QColor("#1B1B1F"))
             p.setBrush(QBrush(shade))
             p.drawPath(lid)
             self._paint_bands(p, center, width, lid_bottom - face * 0.82, lid_bottom)
         else:
             back = QRectF(center - half, lid_bottom + face, width, -face)
-            p.setBrush(QColor("#6B2C14"))
+            p.setBrush(QColor("#17171A"))
             p.drawRoundedRect(back, width * 0.03, width * 0.03)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(GOLD))
@@ -299,11 +304,11 @@ class ChestStage(QWidget):
         # Body with plank lines and metal corners.
         p.setPen(outline)
         planks = QLinearGradient(0, body_top, 0, bottom)
-        planks.setColorAt(0, QColor(EMBER))
-        planks.setColorAt(1, QColor("#9E3414"))
+        planks.setColorAt(0, QColor("#2A2A2F"))
+        planks.setColorAt(1, QColor("#111113"))
         p.setBrush(QBrush(planks))
         p.drawRoundedRect(QRectF(center - half, body_top, width, bottom - body_top), width * 0.02, width * 0.02)
-        p.setPen(QPen(QColor(70, 22, 8, 170), width * 0.008))
+        p.setPen(QPen(QColor(255, 255, 255, 28), width * 0.008))
         for step in (0.34, 0.67):
             y = body_top + (bottom - body_top) * step
             p.drawLine(QPointF(center - half * 0.96, y), QPointF(center + half * 0.96, y))
@@ -314,17 +319,17 @@ class ChestStage(QWidget):
         p.setBrush(QColor(GOLD))
         p.drawRect(QRectF(center - half, body_top - width * 0.012, width, width * 0.042))
         clasp = QRectF(center - width * 0.075, body_top - width * 0.05, width * 0.15, width * 0.17)
-        p.setBrush(QColor("#FFD978"))
+        p.setBrush(QColor(GOLD_LIGHT))
         p.drawRoundedRect(clasp, width * 0.024, width * 0.024)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor("#2B1006"))
+        p.setBrush(QColor(INK))
         p.drawEllipse(clasp.center(), width * 0.021, width * 0.021)
         p.drawRect(QRectF(clasp.center().x() - width * 0.008, clasp.center().y(), width * 0.016, width * 0.05))
 
     def _paint_bands(self, p: QPainter, center: float, width: float, top: float, bottom: float) -> None:
         if bottom - top < 1:
             return
-        p.setPen(QPen(QColor("#2B1006"), width * 0.008))
+        p.setPen(QPen(QColor(INK), width * 0.008))
         p.setBrush(QColor(GOLD))
         for x in (-0.36, 0.36):
             p.drawRect(QRectF(center + (x - 0.04) * width, top, width * 0.08, bottom - top))
@@ -335,15 +340,15 @@ class ChestStage(QWidget):
             p.setOpacity(min(1.0, coin.life * 2.2))
             p.translate(coin.x, coin.y)
             flat = abs(math.cos(coin.spin))
-            p.setPen(QPen(QColor("#8F5B09"), max(1.0, coin.size * 0.16)))
-            p.setBrush(QColor("#FFD978"))
+            p.setPen(QPen(QColor(GOLD_DEEP), max(1.0, coin.size * 0.16)))
+            p.setBrush(QColor(GOLD_LIGHT))
             p.drawEllipse(QPointF(0, 0), max(1.5, coin.size * flat), coin.size)
             p.restore()
 
     def _paint_count(self, p: QPainter) -> None:
         text = f"{self.count:,}"
         size = min(self.height() * 0.13, self.width() * 0.11) * (1 + 0.14 * self.pop)
-        p.setPen(QColor(LILAC))
+        p.setPen(QColor(ASH))
         p.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
         p.drawText(
             QRectF(self.width() * 0.07, self.height() * 0.28, self.width() * 0.43, 22),
@@ -358,7 +363,7 @@ class ChestStage(QWidget):
         p.setPen(QColor(GOLD))
         p.setFont(count_font)
         p.drawText(count_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
-        p.setPen(QColor(LILAC))
+        p.setPen(QColor(ASH))
         caption = QFont("Segoe UI")
         caption.setPixelSize(14)
         p.setFont(caption)
@@ -489,7 +494,7 @@ class MatchMeter(QWidget):
             score_fraction = self._fraction_at_threshold(self.score)
             score_fraction = min(1.0, max(0.0, score_fraction))
             fill = QRectF(track.left(), track.top(), track.width() * score_fraction, track.height())
-            score_color = QColor(MINT if self.score >= self.threshold else LILAC)
+            score_color = QColor(MINT if self.score >= self.threshold else ASH)
             score_color.setAlpha(110)
             p.setBrush(score_color)
             p.drawRoundedRect(fill, 4, 4)
@@ -536,13 +541,13 @@ class LeaderRow(QWidget):
         p.setBrush(QColor(DUSK))
         p.drawRoundedRect(area, 5, 5)
         share = max(0.0, self.count / self.top) if self.top > 0 else 0.0
-        bar = QColor(GOLD if self.rank == 1 else LILAC)
+        bar = QColor(GOLD if self.rank == 1 else ASH)
         bar.setAlphaF(0.32 if self.rank == 1 else 0.17)
         p.setBrush(bar)
         p.drawRoundedRect(QRectF(area.left(), area.top(), area.width() * share, area.height()), 5, 5)
 
         p.setFont(display_font(21))
-        p.setPen(QColor(BONE if self.rank == 1 else LILAC))
+        p.setPen(QColor(BONE if self.rank == 1 else ASH))
         p.drawText(area.adjusted(14, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter, str(self.rank))
         name = QFont("Segoe UI")
         name.setPixelSize(15)
@@ -588,6 +593,6 @@ class StepBadge(QWidget):
         p.setPen(QPen(QColor(GOLD if self.active else LINE), 2))
         p.setBrush(QColor(NIGHT))
         p.drawEllipse(circle)
-        p.setPen(QColor(GOLD if self.active else LILAC))
+        p.setPen(QColor(GOLD if self.active else ASH))
         p.setFont(display_font(17))
         p.drawText(circle, Qt.AlignmentFlag.AlignCenter, str(self.number))

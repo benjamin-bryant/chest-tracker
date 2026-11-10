@@ -10,7 +10,7 @@ from pathlib import Path
 import discord
 from discord import app_commands
 
-from protocol import parse_delta, parse_player
+from protocol import parse_delta
 from store import Store
 
 log = logging.getLogger("chest-tracker")
@@ -23,9 +23,8 @@ def ingest(store: Store, message) -> bool:
     amount = parse_delta(message.content)
     if amount is None:
         return False
-    player = parse_player(message.content) or message.author.name
     return store.record_message(
-        message.id, player, amount, int(message.created_at.timestamp())
+        message.id, message.author.name, amount, int(message.created_at.timestamp())
     )
 
 
