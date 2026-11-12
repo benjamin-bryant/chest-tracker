@@ -20,6 +20,7 @@ import numpy as np
 import requests
 
 from detection import CANCELLED, OPENED, PENDING, ChestDetector, PromptMatcher, scene_similarity, scene_thumb
+from gamepad import is_pad_name, shared_gamepad
 from protocol import format_delta, is_webhook_url
 from settings import read_json
 from wheel import WheelListener
@@ -72,7 +73,7 @@ def _shared_wheel() -> WheelListener:
 
 
 def interact_check(names: list[str]) -> Callable[[], bool]:
-    """Build a function that says whether any interact key or wheel direction was just used."""
+    """Build a function that says whether any interact key, wheel direction or controller button was just used."""
     checks = []
     for name in names:
         upper = name.strip().upper()
@@ -80,6 +81,10 @@ def interact_check(names: list[str]) -> Callable[[], bool]:
             checks.append(_shared_wheel().scrolled_up)
         elif upper == "WHEELDOWN":
             checks.append(_shared_wheel().scrolled_down)
+        elif upper.startswith("PAD_"):
+            if not is_pad_name(upper):
+                raise ValueError(f'Unknown controller button "{name}"')
+            checks.append(lambda button=upper: shared_gamepad().pressed(button))
         else:
             code = key_code(name)
             checks.append(lambda code=code: key_down(code))

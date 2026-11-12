@@ -35,7 +35,7 @@ This fork is based on [Xxoris190/chest-tracker](https://github.com/Xxoris190/che
 - **Can keep a group leaderboard.** Optionally connect Discord to total everyone's chests and answer `/chests` and `/leaderboard`.
 - **Can show Fortnite stats.** Look up public Battle Royale stats by player name with an optional Fortnite-API.com key.
 - **Doesn't lose chests.** If Discord can't be reached, chests are saved and sent later, and the bot catches up after being offline.
-- **Works with your binds.** Use any key, a mouse button, or the scroll wheel to interact.
+- **Works with your binds.** Use any key, a mouse button, the scroll wheel, or an Xbox-style controller button to interact.
 - **Finds your screen.** It follows Fortnite to whichever monitor it's on.
 - **Optional in-game overlay.** Show the chest count over Fortnite, drag it clear of your HUD in Setup, and mouse input passes through while playing. The overlay is excluded from the app's own screen capture, so it can't be mistaken for part of the game.
 
@@ -79,7 +79,7 @@ The app can't see inside the game, so these rules are strong evidence rather tha
 - The "moved on" rule counts a chest when the prompt returns to a new view. If you finish a search and then turn back to the same chest within 3 seconds, it is treated as a cancel and that chest is missed.
 - The prompt only says SEARCH, so anything else with the same prompt, possibly including ammo boxes, can count. See [Help tell chests from ammo boxes](#help-tell-chests-from-ammo-boxes).
 - Anyone with the webhook URL could post to the channel directly, so only share it with people you trust.
-- Controllers aren't supported yet.
+- Controllers: only Xbox-style pads (or ones that present themselves as Xbox pads) work, and only for the interact button. The undo key is still a keyboard key. PlayStation pads need Steam Input or DS4Windows to look like an Xbox pad.
 
 ## Set up the Discord bot
 
@@ -118,6 +118,7 @@ Only one person in your group needs to do this. Everyone else only needs the sha
 - **The bar stays below the marker:** set up the prompt again. You can save several, such as one in a dark area. Remove old ones after changing resolution or HUD scale.
 - **The status says "Can't see the game":** use Windowed Fullscreen, and try turning HDR off.
 - **The bar passes but nothing counts:** check that **Interact key** matches your Fortnite binding.
+- **Controller button isn't picked up:** in **Setup**, select the interact key box and press the button on the controller. It should appear as, for example, "Controller A button". Use the button you have bound to interact in Fortnite. If nothing happens, check that Windows sees the controller (Settings, Bluetooth & devices).
 
 **Real chests show "Search cancelled".** Keep aiming at the chest for a second after searching.
 
@@ -173,6 +174,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 | `detection.py` | The rules that decide whether a search counts |
 | `watcher.py` | Screen capture, input checks, and sending to Discord |
 | `wheel.py` | Scroll wheel detection through Windows raw input |
+| `gamepad.py` | Xbox-style controller buttons through XInput |
 | `bot.py`, `store.py` | The Discord bot and its database |
 | `ui.py`, `widgets.py`, `overlay.py` | The app window, animated chest and in-game count badge |
 | `settings.py`, `protocol.py` | Saved settings and counts, and the rules for names, webhook links and messages |

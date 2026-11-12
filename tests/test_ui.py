@@ -153,3 +153,45 @@ def test_every_page_builds_and_the_overlay_follows_the_count(window):
         window.go_to(index)
     window.record_chest(1, "detected")
     assert window.overlay.count == 1
+
+
+class FakeListener:
+    def __init__(self):
+        self.queue = []
+
+    def take_any(self):
+        return self.queue.pop(0) if self.queue else None
+
+
+def test_setup_key_picker_takes_a_controller_button(app, monkeypatch):
+    fake = FakeListener()
+    monkeypatch.setattr(ui, "shared_gamepad", lambda: fake)
+    capture = ui.KeyCapture()
+    chosen = []
+    capture.captured.connect(chosen.append)
+    capture._listen()
+    assert "controller button" in capture.text()
+    capture._check_pad()
+    assert chosen == [] and capture.listening  # nothing pressed yet
+    fake.queue.append("PAD_RT")
+    capture._check_pad()
+    assert chosen == ["PAD_RT"]
+    assert not capture.listening and not capture.pad_timer.isActive()
+    assert capture.text() == "Controller Right trigger"
+
+
+def test_undo_key_picker_ignores_the_controller(app, monkeypatch):
+    fake = FakeListener()
+    fake.queue.append("PAD_A")
+    monkeypatch.setattr(ui, "shared_gamepad", lambda: fake)
+    capture = ui.KeyCapture(keyboard_only=True, action_label="undo key")
+    capture._listen()
+    assert not capture.pad_timer.isActive()
+    assert "controller" not in capture.text()
+    capture._finish(None)
+
+
+def test_a_saved_controller_button_is_shown_by_name(window, monkeypatch):
+    monkeypatch.setattr(ui, "shared_gamepad", lambda: FakeListener())
+    window.settings.set(interact_keys=["PAD_A"])
+    assert ui.key_label("PAD_A") == "Controller A button"

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 from bot import BotRunner
 from detection import CANCELLED, PENDING, PromptMatcher
 from fortnite_stats import FortniteStatsError, fetch_stats
+from gamepad import is_pad_name, pad_label, shared_gamepad
 from overlay import ChestOverlay
 from protocol import MAX_NAME_LENGTH, name_problem
 from settings import Settings, Stats
@@ -133,6 +134,8 @@ MOUSE_NAMES = {
 
 
 def key_label(name: str) -> str:
+    if is_pad_name(name):
+        return pad_label(name)
     return KEY_LABELS.get(name.upper(), name.upper())
 
 
@@ -205,6 +208,9 @@ class KeyCapture(QPushButton):
         self.listening = False
         self.keyboard_only = keyboard_only
         self.action_label = action_label
+        self.pad_timer = QTimer(self)
+        self.pad_timer.setInterval(30)
+        self.pad_timer.timeout.connect(self._check_pad)
         self.clicked.connect(self._listen)
         self._refresh()
 
@@ -213,7 +219,8 @@ class KeyCapture(QPushButton):
         self._refresh()
 
     def _refresh(self) -> None:
-        prompt = f"Press your {self.action_label} (Esc cancels)"
+        controller = "" if self.keyboard_only else " or controller button"
+        prompt = f"Press your {self.action_label}{controller} (Esc cancels)"
         self.setText(prompt if self.listening else key_label(self.current))
         self.setProperty("listening", self.listening)
         self.style().unpolish(self)
@@ -224,10 +231,25 @@ class KeyCapture(QPushButton):
         self.grabKeyboard()
         if not self.keyboard_only:
             self.grabMouse()
+            try:
+                shared_gamepad().take_any()  # forget presses from before this click
+                self.pad_timer.start()
+            except Exception as error:
+                log.warning("Controller input unavailable: %s", error)
         self._refresh()
+
+    def _check_pad(self) -> None:
+        try:
+            name = shared_gamepad().take_any()
+        except Exception:
+            self.pad_timer.stop()
+            return
+        if name:
+            self._finish(name)
 
     def _finish(self, name: str | None) -> None:
         self.listening = False
+        self.pad_timer.stop()
         self.releaseKeyboard()
         if not self.keyboard_only:
             self.releaseMouse()
