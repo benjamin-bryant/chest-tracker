@@ -27,7 +27,7 @@ from wheel import WheelListener
 
 log = logging.getLogger("chest-tracker")
 
-VK_F8, VK_F10, VK_BACK = 0x77, 0x79, 0x08
+VK_F8, VK_F9, VK_F10, VK_BACK = 0x77, 0x78, 0x79, 0x08
 LOOKED_AWAY_BELOW = 0.5  # scene similarity under this means the aim left the chest
 NAMED_KEYS = {
     "BACKSPACE": VK_BACK,
@@ -295,6 +295,8 @@ class WatchEngine(threading.Thread):
         focused: Callable[[], bool] = fortnite_focused,
         capture_factory=ScreenCapture,
         remove_hotkey: int = VK_F10,
+        pause_hotkey: int | None = None,
+        on_pause: Callable[[], None] = lambda: None,
     ):
         super().__init__(daemon=True)
         self.matcher = matcher
@@ -307,6 +309,9 @@ class WatchEngine(threading.Thread):
         self.focused = focused
         self.capture_factory = capture_factory
         self.remove_hotkey = remove_hotkey
+        self.pause_hotkey = pause_hotkey
+        self.on_pause = on_pause
+        self.paused = threading.Event()  # while set, nothing is counted
         self.halt = threading.Event()
 
     def stop(self) -> None:
@@ -322,6 +327,7 @@ class WatchEngine(threading.Thread):
     def _loop(self, capture) -> None:
         detector = ChestDetector()
         remove_one = KeyEdge(self.remove_hotkey)
+        pause_one = KeyEdge(self.pause_hotkey) if self.pause_hotkey is not None else None
         was_focused = None
         reference = None
         lowest_similarity = 1.0
@@ -347,6 +353,20 @@ class WatchEngine(threading.Thread):
                     # A quick undo after a count usually means it wasn't a chest: useful when tuning.
                     log.info("Undo pressed %.1fs after the last counted chest", time.monotonic() - last_count_at)
                 self.on_chest(-1, "hotkey")
+            if pause_one is not None and pause_one.pressed() and focused:
+                self.on_pause()  # the window flips the pause state and tells this thread
+
+            if self.paused.is_set():
+                if detector.armed:
+                    self.on_attempt(CANCELLED)  # paused mid-search: that search is not counted
+                detector.reset()
+                reference = None
+                black_since = None
+                was_focused = None  # look at the game afresh once resumed
+                self.interact_used()  # presses while paused must not count later
+                set_state("off")
+                self.halt.wait(0.03)  # short, so a quick tap on the resume key is not missed
+                continue
 
             if focused != was_focused:
                 was_focused = focused

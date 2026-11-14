@@ -37,7 +37,9 @@ This fork is based on [Xxoris190/chest-tracker](https://github.com/Xxoris190/che
 - **Doesn't lose chests.** If Discord can't be reached, chests are saved and sent later, and the bot catches up after being offline.
 - **Works with your binds.** Use any key, a mouse button, the scroll wheel, or an Xbox-style controller button to interact.
 - **Finds your screen.** It follows Fortnite to whichever monitor it's on.
-- **Optional in-game overlay.** Show the chest count over Fortnite, drag it clear of your HUD in Setup, and mouse input passes through while playing. The overlay is excluded from the app's own screen capture, so it can't be mistaken for part of the game.
+- **Pause key.** Press **F9** in Fortnite to stop counting (say, in a party lobby or when you are messing about) and press it again to resume. The overlay shows PAUSED.
+- **Optional chime.** A short sound when a chest is counted, for when you miss the animation. Off by default, with its own volume.
+- **Optional in-game overlay.** Show the chest count over Fortnite, drag it clear of your HUD in Setup, and mouse input passes through while playing. You can change its size and opacity in Setup. The overlay is excluded from the app's own screen capture, so it can't be mistaken for part of the game.
 
 ## Get started
 
@@ -50,7 +52,7 @@ To share counts with a group, add your player name and Discord webhook in **Setu
 
 Open **Fortnite Stats** to enter a Fortnite-API.com key, player name and account platform, then select **Refresh stats**. The page shows lifetime or current-season overall and Solo/Duo/Squad stats. Stats requests are manual; the app doesn't sign in to Epic. Fortnite-API.com is an independent, non-official service and requires its own API key for stats. You can create one at the [Fortnite-API dashboard](https://dash.fortnite-api.com/account).
 
-To use the in-game overlay, open **Setup**, enable **Show the chest count over Fortnite**, select **Set overlay position**, and drag the badge where you want it. Select **Done positioning** before returning to Fortnite. The overlay is hidden when Fortnite isn't the active window. It needs Windows 10 version 2004 or newer to stay out of the app's screen reads; on older builds, keep it away from the middle of the screen.
+To use the in-game overlay, open **Setup**, enable **Show the chest count over Fortnite**, select **Set overlay position**, and drag the badge where you want it. Select **Done positioning** before returning to Fortnite. The overlay is hidden when Fortnite isn't the active window. **Size** and **Opacity** change as you drag the sliders; the badge is only visible during **Set overlay position** or in the game. It needs Windows 10 version 2004 or newer to stay out of the app's screen reads; on older builds, keep it away from the middle of the screen.
 
 Closing the window keeps it counting from the system tray. To exit, right-click the tray icon and select **Quit**.
 
@@ -69,7 +71,9 @@ Fortnite has no official way to report chest opens, so the app works it out from
 
 If the prompt comes back while you are still aiming at the same spot, or you look away during that first second, the search is cancelled. There is one exception, so a fast run of chests isn't missed: if the prompt comes back only after your view has turned somewhere new, and you had kept your aim for that first second, you finished and moved on, so that chest counts straight away.
 
-Counted one by mistake? Press **F10** while Fortnite is focused, or select **Remove last chest**. You can choose a different keyboard key in **Setup**; the app asks first if you pick one you also type with, because chat in Fortnite would then remove chests. Removing a chest when your count is already 0 does nothing, and nothing is sent to Discord. Players can't add chests by hand, but someone with Manage Server can use `/add` in Discord.
+Counted one by mistake? Press **F10** while Fortnite is focused, or select **Remove last chest**. You can choose a different keyboard key in **Setup**; the app asks first if you pick one you also type with, because chat in Fortnite would then remove chests. Removing a chest when your count is already 0 does nothing, and nothing is sent to Discord.
+
+To pause, press **F9** while Fortnite is focused or use **Pause tracking** in the window or tray. Nothing is counted while paused, and a search under way when you pause is dropped. Pausing also forgets presses made while paused. Undo, pause and interact must be three different keys. To hear the chime, turn it on under **Chime** in Setup and use **Play sound** to check the volume. Players can't add chests by hand, but someone with Manage Server can use `/add` in Discord.
 
 ### Known limits
 
@@ -177,6 +181,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 | `gamepad.py` | Xbox-style controller buttons through XInput |
 | `bot.py`, `store.py` | The Discord bot and its database |
 | `ui.py`, `widgets.py`, `overlay.py` | The app window, animated chest and in-game count badge |
+| `chime.py` | The optional counted-chest sound, generated in code |
 | `settings.py`, `protocol.py` | Saved settings and counts, and the rules for names, webhook links and messages |
 | `tests/` | The automated tests. They run on any OS, since the Windows calls are stubbed |
 

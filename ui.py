@@ -18,19 +18,20 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QScrollArea,
-    QSizePolicy, QStackedWidget, QSystemTrayIcon, QVBoxLayout, QWidget,
+    QSizePolicy, QSlider, QStackedWidget, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
 from bot import BotRunner
+from chime import DEFAULT_VOLUME, MAX_VOLUME, MIN_VOLUME, Chime, clamp_volume
 from detection import CANCELLED, PENDING, PromptMatcher
 from fortnite_stats import FortniteStatsError, fetch_stats
 from gamepad import is_pad_name, pad_label, shared_gamepad
-from overlay import ChestOverlay
+from overlay import MAX_OPACITY, MAX_SCALE, MIN_OPACITY, MIN_SCALE, ChestOverlay, clamp
 from protocol import MAX_NAME_LENGTH, name_problem
 from settings import Settings, Stats
 from store import Store
 from watcher import (
-    VK_F8, VK_F10, KeyEdge, Sender, WatchEngine, capture_focused_screen, check_webhook, fortnite_focused,
+    VK_F8, VK_F9, VK_F10, KeyEdge, Sender, WatchEngine, capture_focused_screen, check_webhook, fortnite_focused,
     foreground_window_bounds, interact_check, selection_too_big, key_code
 )
 from widgets import (
@@ -102,6 +103,11 @@ QCheckBox {{ spacing: 9px; }}
 QCheckBox::indicator {{ width: 17px; height: 17px; border: 1px solid {ASH}; border-radius: 4px; background: {NIGHT}; }}
 QCheckBox::indicator:checked {{ background: {GOLD}; border-color: {GOLD}; }}
 QCheckBox:focus {{ color: {GOLD}; }}
+QSlider::groove:horizontal {{ height: 4px; border-radius: 2px; background: {LINE}; }}
+QSlider::sub-page:horizontal {{ border-radius: 2px; background: {GOLD}; }}
+QSlider::handle:horizontal {{ width: 14px; height: 14px; margin: -6px 0; border-radius: 7px; background: {BONE}; border: 1px solid {GOLD_DEEP}; }}
+QSlider::handle:horizontal:hover {{ background: {GOLD_LIGHT}; }}
+QSlider:focus::handle:horizontal {{ border-color: {GOLD}; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; }}
 QScrollBar::handle:vertical {{ background: {LINE}; border-radius: 5px; min-height: 30px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
@@ -724,6 +730,15 @@ class SetupPage(QWidget):
         self.remove_capture.set_key(settings["remove_key"])
         self.remove_capture.captured.connect(self._save_remove_key)
         self.key_step.content.addWidget(self.remove_capture)
+        self.key_step.content.addWidget(label(
+            "Click to choose a pause key. Press it in Fortnite to stop counting, and press it again to resume; "
+            "F9 is the default.",
+            "muted", wrap=True,
+        ))
+        self.pause_capture = KeyCapture(keyboard_only=True, action_label="pause key")
+        self.pause_capture.set_key(settings["pause_key"])
+        self.pause_capture.captured.connect(self._save_pause_key)
+        self.key_step.content.addWidget(self.pause_capture)
 
         self.prompt_step = Step(4, "Chest prompt", last=True)
         self.prompt_step.content.addWidget(label(
@@ -775,6 +790,37 @@ class SetupPage(QWidget):
         self.overlay_position.clicked.connect(self._toggle_overlay_position)
         overlay_row.addWidget(self.overlay_position)
         layout.addLayout(overlay_row)
+        self.size_slider, self.size_text = self._option_slider(
+            layout, "Size", 100 * MIN_SCALE, 100 * MAX_SCALE,
+            100 * clamp(settings["overlay_scale"], MIN_SCALE, MAX_SCALE, 1.0), "{}%", self._save_overlay_scale,
+        )
+        self.opacity_slider, self.opacity_text = self._option_slider(
+            layout, "Opacity", 100 * MIN_OPACITY, 100 * MAX_OPACITY,
+            100 * clamp(settings["overlay_opacity"], MIN_OPACITY, MAX_OPACITY, 1.0), "{}%", self._save_overlay_opacity,
+        )
+        layout.addWidget(label(
+            "Use Set overlay position to see the badge while you adjust size and opacity.", "small", wrap=True,
+        ))
+
+        layout.addSpacing(12)
+        layout.addWidget(label("Chime", "subheading"))
+        layout.addWidget(label(
+            "A short sound each time a chest is counted, for when you miss the animation.",
+            "muted", wrap=True,
+        ))
+        chime_row = QHBoxLayout()
+        self.chime_enabled = QCheckBox("Play a sound when a chest is counted")
+        self.chime_enabled.setChecked(bool(settings["chime_enabled"]))
+        self.chime_enabled.toggled.connect(self._save_chime_enabled)
+        chime_row.addWidget(self.chime_enabled, 1)
+        self.chime_test = QPushButton("Play sound")
+        self.chime_test.clicked.connect(self.window_.play_chime)
+        chime_row.addWidget(self.chime_test)
+        layout.addLayout(chime_row)
+        self.volume_slider, self.volume_text = self._option_slider(
+            layout, "Volume", 100 * MIN_VOLUME, 100 * MAX_VOLUME,
+            100 * clamp_volume(settings["chime_volume"]), "{}%", self._save_chime_volume,
+        )
         layout.addStretch(1)
         self.refresh_gallery()
         self.refresh_steps()
@@ -784,6 +830,42 @@ class SetupPage(QWidget):
     def _open_step(self, chosen: Step) -> None:
         for step in self.steps:
             step.set_open(step is chosen and not (step.is_open and step is chosen))
+
+    def _option_slider(self, layout, name: str, low: float, high: float, value: float, text: str, on_done):
+        """A labelled slider that applies as it moves and saves when released."""
+        row = QHBoxLayout()
+        title = label(name, "muted")
+        title.setMinimumWidth(70)
+        row.addWidget(title)
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(round(low), round(high))
+        slider.setValue(round(value))
+        shown = label(text.format(slider.value()), "small")
+        shown.setMinimumWidth(48)
+        slider.valueChanged.connect(lambda v: shown.setText(text.format(v)))
+        slider.valueChanged.connect(lambda v: on_done(v / 100, False))
+        slider.sliderReleased.connect(lambda: on_done(slider.value() / 100, True))
+        row.addWidget(slider, 1)
+        row.addWidget(shown)
+        layout.addLayout(row)
+        return slider, shown
+
+    def _save_overlay_scale(self, value: float, final: bool) -> None:
+        self.window_.set_overlay_scale(value, save=final or not self.size_slider.isSliderDown())
+
+    def _save_overlay_opacity(self, value: float, final: bool) -> None:
+        self.window_.set_overlay_opacity(value, save=final or not self.opacity_slider.isSliderDown())
+
+    def _save_chime_enabled(self, enabled: bool) -> None:
+        self.window_.settings.set(chime_enabled=enabled)
+        if enabled:
+            self.window_.play_chime()
+
+    def _save_chime_volume(self, value: float, final: bool) -> None:
+        if final or not self.volume_slider.isSliderDown():
+            self.window_.settings.set(chime_volume=clamp_volume(value))
+        if final:
+            self.window_.play_chime(volume=value)
 
     def _toggle_overlay_position(self) -> None:
         self.window_.toggle_overlay_positioning()
@@ -800,7 +882,8 @@ class SetupPage(QWidget):
         self.webhook_step.set_done(True, "Linked" if settings["webhook_url"] else "Local only")
         self.key_step.set_done(
             True,
-            f"{key_label(settings['interact_keys'][0])} interact · {key_label(settings['remove_key'])} undo",
+            f"{key_label(settings['interact_keys'][0])} interact · {key_label(settings['remove_key'])} undo"
+            f" · {key_label(settings['pause_key'])} pause",
         )
         count = len(list(self.window_.templates_dir.glob("*.png")))
         self.prompt_step.set_done(count > 0, f"{count} saved")
@@ -872,32 +955,56 @@ class SetupPage(QWidget):
                 self._test_webhook()
 
     def _save_key(self, name: str) -> None:
-        if name == self.window_.settings["remove_key"]:
+        if name in (self.window_.settings["remove_key"], self.window_.settings["pause_key"]):
             self.capture.set_key(self.window_.settings["interact_keys"][0])
-            QMessageBox.warning(self, "Keys must be different", "Choose a different key for interact and undo.")
+            QMessageBox.warning(
+                self, "Keys must be different", "Choose a different key for interact, undo and pause."
+            )
             return
         self.window_.settings.set(interact_keys=[name])
         self.refresh_steps()
         self.window_.restart_engine()
 
+    def _typing_key_allowed(self, name: str, what: str) -> bool:
+        """Typing in Fortnite (chat, search boxes, party names) would trigger a letter or space key."""
+        if not (name == "BACKSPACE" or len(name) == 1 or name == "SPACE"):
+            return True
+        answer = QMessageBox.question(
+            self, "This key is used for typing",
+            f"{key_label(name)} is pressed while typing in Fortnite, so chat or a search box could "
+            f"{what} by accident. Use it anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
     def _save_remove_key(self, name: str) -> None:
-        if name == self.window_.settings["interact_keys"][0]:
-            self.remove_capture.set_key(self.window_.settings["remove_key"])
-            QMessageBox.warning(self, "Keys must be different", "Choose a different key for interact and undo.")
-            return
-        if name == "BACKSPACE" or len(name) == 1 or name == "SPACE":
-            # Typing in Fortnite (chat, search boxes, party names) would remove chests.
-            answer = QMessageBox.question(
-                self, "This key is used for typing",
-                f"{key_label(name)} is pressed while typing in Fortnite, so chat or a search box could "
-                "remove chests by accident. Use it anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
+        settings = self.window_.settings
+        if name in (settings["interact_keys"][0], settings["pause_key"]):
+            self.remove_capture.set_key(settings["remove_key"])
+            QMessageBox.warning(
+                self, "Keys must be different", "Choose a different key for interact, undo and pause."
             )
-            if answer != QMessageBox.StandardButton.Yes:
-                self.remove_capture.set_key(self.window_.settings["remove_key"])
-                return
-        self.window_.settings.set(remove_key=name)
+            return
+        if not self._typing_key_allowed(name, "remove chests"):
+            self.remove_capture.set_key(settings["remove_key"])
+            return
+        settings.set(remove_key=name)
+        self.refresh_steps()
+        self.window_.restart_engine()
+
+    def _save_pause_key(self, name: str) -> None:
+        settings = self.window_.settings
+        if name in (settings["interact_keys"][0], settings["remove_key"]):
+            self.pause_capture.set_key(settings["pause_key"])
+            QMessageBox.warning(
+                self, "Keys must be different", "Choose a different key for interact, undo and pause."
+            )
+            return
+        if not self._typing_key_allowed(name, "pause tracking"):
+            self.pause_capture.set_key(settings["pause_key"])
+            return
+        settings.set(pause_key=name)
         self.refresh_steps()
         self.window_.restart_engine()
 
@@ -1232,6 +1339,7 @@ class MainWindow(QMainWindow):
     match_score = Signal(float)
     delivery = Signal(bool, str)
     bot_status = Signal(str, str)
+    pause_pressed = Signal()
 
     def __init__(self, folder: Path, icon: QIcon):
         super().__init__()
@@ -1245,7 +1353,10 @@ class MainWindow(QMainWindow):
         self.delivery_ok = True
         self.current_state = "off"
         self.leaderboard_seen = None
+        self.chime = Chime()
         self.overlay = ChestOverlay()
+        self.overlay.set_scale(self.settings["overlay_scale"])
+        self.overlay.set_opacity(self.settings["overlay_opacity"])
         self.overlay.set_count(self.stats.total)
         self.overlay.position_saved.connect(self._save_overlay_position)
         self._overlay_positioning = False
@@ -1302,6 +1413,7 @@ class MainWindow(QMainWindow):
 
         self.chest.connect(self.record_chest)
         self.attempt.connect(self._on_attempt)
+        self.pause_pressed.connect(self.toggle_pause)
         self.engine_state.connect(self.set_state)
         self.match_score.connect(self.setup.show_score)
         self.delivery.connect(self._on_delivery)
@@ -1384,9 +1496,6 @@ class MainWindow(QMainWindow):
         if self.missing_setup():
             self.set_state("setup")
             return
-        if self.paused:
-            self.set_state("off")
-            return
         threshold = min(0.99, max(0.5, float(self.settings["match_threshold"])))  # the meter's range
         matcher = PromptMatcher.from_folder(self.templates_dir, threshold)
         try:
@@ -1398,6 +1507,14 @@ class MainWindow(QMainWindow):
             self.setup.refresh_steps()
             remove_code = VK_F10
         try:
+            pause_code = key_code(self.settings["pause_key"])
+        except ValueError as error:
+            log.error("Pause key problem: %s. Using F9.", error)
+            self.settings.set(pause_key="F9")
+            self.setup.pause_capture.set_key("F9")
+            self.setup.refresh_steps()
+            pause_code = VK_F9
+        try:
             interact = interact_check(self.settings["interact_keys"])
         except (ValueError, RuntimeError) as error:
             log.error("Interact key problem: %s", error)
@@ -1407,8 +1524,11 @@ class MainWindow(QMainWindow):
         self.engine = WatchEngine(
             matcher, interact, self.settings["search_area"],
             self.chest.emit, self.engine_state.emit, self.match_score.emit, self.attempt.emit,
-            remove_hotkey=remove_code,
+            remove_hotkey=remove_code, pause_hotkey=pause_code, on_pause=self.pause_pressed.emit,
         )
+        if self.paused:
+            self.engine.paused.set()  # stays paused through a settings change
+            self.set_state("off")
         self.engine.start()
 
     def apply_identity(self) -> None:
@@ -1442,6 +1562,8 @@ class MainWindow(QMainWindow):
 
     def record_chest(self, amount: int, source: str) -> None:
         changed = self.stats.add(amount)  # 0 when there was nothing left to take off
+        if source == "detected" and changed > 0 and self.settings["chime_enabled"]:
+            self.play_chime()
         self.overlay.set_count(self.stats.total, celebrate=source == "detected" and changed > 0)
         # Only share what really changed, and only if Discord sharing is set up. Sending a
         # -1 for a chest that was never counted would push the group total below the truth.
@@ -1457,12 +1579,40 @@ class MainWindow(QMainWindow):
         else:
             self.tracker.log("Nothing to remove, the count is already 0", ASH)
 
+    def play_chime(self, volume: float | None = None) -> None:
+        self.chime.play(self.settings["chime_volume"] if volume is None else volume)
+
     def toggle_pause(self) -> None:
         self.paused = not self.paused
         text = "Resume tracking" if self.paused else "Pause tracking"
         self.tracker.pause.setText(text)
         self.tray_pause.setText("Resume" if self.paused else "Pause")
-        self.restart_engine()
+        self.overlay.set_paused(self.paused)
+        if self.engine:
+            # The engine keeps running so it can hear the pause key again, but counts nothing.
+            if self.paused:
+                self.engine.paused.set()
+            else:
+                self.engine.paused.clear()
+        if self.paused:
+            self.set_state("off")
+            self.tracker.log("Paused. Nothing is counted until you resume.", ASH)
+        else:
+            self.tracker.log("Resumed", MINT)
+            if self.engine is None:
+                self.restart_engine()
+
+    def set_overlay_scale(self, scale: float, save: bool = True) -> None:
+        self.overlay.set_scale(scale)
+        if save:
+            self.settings.set(overlay_scale=self.overlay.scale)
+        if self._overlay_screen is not None:
+            self._place_overlay(self._overlay_screen)  # keep the badge on screen at the new size
+
+    def set_overlay_opacity(self, opacity: float, save: bool = True) -> None:
+        self.overlay.set_opacity(opacity)
+        if save:
+            self.settings.set(overlay_opacity=self.overlay.opacity)
 
     def set_overlay_enabled(self, enabled: bool) -> None:
         self.settings.set(overlay_enabled=enabled)

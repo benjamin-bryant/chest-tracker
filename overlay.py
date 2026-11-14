@@ -3,11 +3,27 @@
 import ctypes
 import random
 
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
-from widgets import ASH, BONE, DUSK, GOLD, GOLD_LIGHT, LINE, MINT
+from widgets import ASH, BONE, DUSK, EMBER, GOLD, GOLD_LIGHT, LINE, MINT
+
+
+BASE_WIDTH, BASE_HEIGHT = 220, 76
+MIN_SCALE, MAX_SCALE = 0.7, 2.0
+MIN_OPACITY, MAX_OPACITY = 0.3, 1.0
+
+
+def clamp(value, low: float, high: float, default: float) -> float:
+    """A setting from a file that may have been edited by hand: always lands in range."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if number != number:  # NaN
+        return default
+    return min(high, max(low, number))
 
 
 class ChestOverlay(QWidget):
@@ -25,8 +41,11 @@ class ChestOverlay(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setFixedSize(220, 76)
+        self.scale = 1.0
+        self.opacity = 1.0
+        self.setFixedSize(BASE_WIDTH, BASE_HEIGHT)
         self.count = 0
+        self.paused = False
         self.positioning = False
         self.click_through = False
         self._drag_offset: QPoint | None = None
@@ -36,13 +55,26 @@ class ChestOverlay(QWidget):
         self._timer.setInterval(16)
         self._timer.timeout.connect(self._tick)
 
+    def set_scale(self, scale: float) -> None:
+        self.scale = clamp(scale, MIN_SCALE, MAX_SCALE, 1.0)
+        self.setFixedSize(round(BASE_WIDTH * self.scale), round(BASE_HEIGHT * self.scale))
+        self.update()
+
+    def set_opacity(self, opacity: float) -> None:
+        self.opacity = clamp(opacity, MIN_OPACITY, MAX_OPACITY, 1.0)
+        self.update()
+
+    def set_paused(self, paused: bool) -> None:
+        self.paused = paused
+        self.update()
+
     def set_count(self, count: int, celebrate: bool = False) -> None:
         self.count = count
         if celebrate:
             colors = [QColor(GOLD), QColor(GOLD_LIGHT), QColor(BONE), QColor(ASH)]
             for _ in range(24):
                 self._particles.append([
-                    random.uniform(20, self.width() - 20),
+                    random.uniform(20, BASE_WIDTH - 20),
                     random.uniform(20, 46),
                     random.uniform(-2.8, 2.8),
                     random.uniform(-5.4, -1.0),
@@ -119,18 +151,26 @@ class ChestOverlay(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setOpacity(self.opacity)
+        painter.scale(self.scale, self.scale)  # everything below is drawn at the base size
         background = QColor(DUSK)
         background.setAlpha(232)
         painter.setPen(QPen(QColor(LINE), 1.5))
         painter.setBrush(background)
-        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 13, 13)
+        painter.drawRoundedRect(QRectF(1, 1, BASE_WIDTH - 2, BASE_HEIGHT - 2), 13, 13)
 
-        painter.setPen(QColor(MINT if self.positioning else GOLD))
+        if self.positioning:
+            heading, heading_color = "DRAG TO POSITION", MINT
+        elif self.paused:
+            heading, heading_color = "PAUSED", EMBER
+        else:
+            heading, heading_color = "CHESTS OPENED", GOLD
+        painter.setPen(QColor(heading_color))
         small = QFont("Segoe UI", 9, QFont.Weight.DemiBold)
         painter.setFont(small)
-        painter.drawText(14, 22, "DRAG TO POSITION" if self.positioning else "CHESTS OPENED")
+        painter.drawText(14, 22, heading)
 
-        painter.setPen(QColor(BONE))
+        painter.setPen(QColor(ASH if self.paused and not self.positioning else BONE))
         large = QFont("Bahnschrift SemiBold Condensed", 27, QFont.Weight.Bold)
         painter.setFont(large)
         painter.drawText(14, 59, f"{self.count:,}")
@@ -138,7 +178,7 @@ class ChestOverlay(QWidget):
         if self._flash > 0:
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(212, 175, 55, int(self._flash * 70)))
-            painter.drawRoundedRect(self.rect().adjusted(2, 2, -2, -2), 12, 12)
+            painter.drawRoundedRect(QRectF(2, 2, BASE_WIDTH - 4, BASE_HEIGHT - 4), 12, 12)
         for x, y, _vx, _vy, life, color in self._particles:
             painter.setPen(Qt.PenStyle.NoPen)
             particle = QColor(color)

@@ -763,3 +763,145 @@ def test_a_quick_undo_after_a_count_is_logged_for_tuning(monkeypatch, caplog):
         chests, _, _ = run_engine(PromptMatcher([template], 0.8), Capture, presses(), 2.5)
     assert (1, "detected") in chests
     assert any("Undo pressed" in r.getMessage() for r in caplog.records)
+
+
+def make_engine(matcher, capture, interact, **extra):
+    chests, states, attempts, pauses = [], [], [], []
+    extra.setdefault("focused", lambda: True)  # as if Fortnite were in front, unless a test says otherwise
+    engine = WatchEngine(
+        matcher, interact, [0, 0, 1, 1],
+        on_chest=lambda amount, source: chests.append((amount, source)),
+        on_state=states.append,
+        on_score=lambda score: None,
+        on_attempt=attempts.append,
+        capture_factory=capture,
+        remove_hotkey=0x07,
+        on_pause=lambda: pauses.append(1),
+        **extra,
+    )
+    return engine, chests, states, attempts, pauses
+
+
+def test_a_paused_engine_counts_nothing_and_says_so(quick_confirm):
+    template, with_prompt, without, _ = prompt_scenes()
+
+    class Capture(FakeCapture):
+        frames = [with_prompt] * 4 + [without]
+
+    engine, chests, states, attempts, _ = make_engine(PromptMatcher([template], 0.8), Capture, lambda: True)
+    engine.paused.set()
+    engine.start()
+    time.sleep(1.2)
+    engine.stop()
+    engine.join(2)
+    assert chests == [] and attempts == []
+    assert states == ["off"]
+
+
+def test_resuming_counts_again_and_presses_made_while_paused_are_forgotten(quick_confirm):
+    template, with_prompt, without, _ = prompt_scenes()
+
+    class Capture(FakeCapture):
+        frames = [with_prompt] * 4 + [without]
+
+    holder = {}
+    since_resume = {"n": 0}
+
+    def interact():
+        if holder["engine"].paused.is_set():
+            return True  # held down the whole time it was paused; must not carry over
+        since_resume["n"] += 1
+        return since_resume["n"] == 3
+
+    engine, chests, states, _, _ = make_engine(PromptMatcher([template], 0.8), Capture, interact)
+    holder["engine"] = engine
+    engine.paused.set()
+    engine.start()
+    time.sleep(0.4)
+    assert chests == []
+    engine.paused.clear()
+    time.sleep(1.6)
+    engine.stop()
+    engine.join(2)
+    assert chests == [(1, "detected")]
+    assert states[0] == "off" and states[-1] == "watching"
+
+
+def test_pausing_in_the_middle_of_a_search_cancels_it(quick_confirm):
+    template, with_prompt, _, _ = prompt_scenes()
+
+    class Capture(FakeCapture):
+        frames = [with_prompt]
+
+    engine, chests, _, attempts, _ = make_engine(PromptMatcher([template], 0.8), Capture, presses())
+    engine.start()
+    time.sleep(0.5)
+    engine.paused.set()
+    time.sleep(0.4)
+    engine.stop()
+    engine.join(2)
+    assert chests == []
+    assert attempts == [CANCELLED]  # the search that was under way is dropped, not counted
+
+
+def scripted_pause_key(monkeypatch, events):
+    class ScriptedKeyEdge:
+        def __init__(self, code):
+            self.code = code
+
+        def pressed(self):
+            return next(events, False) if self.code == 0x0A else False
+
+    monkeypatch.setattr(watcher, "KeyEdge", ScriptedKeyEdge)
+
+
+def test_the_pause_key_reports_a_press_in_fortnite(monkeypatch):
+    scripted_pause_key(monkeypatch, iter([False, True, False]))
+    template, _, frame, _ = prompt_scenes()
+
+    class Capture(FakeCapture):
+        frames = [frame]
+
+    engine, _, _, _, pauses = make_engine(
+        PromptMatcher([template], 0.8), Capture, lambda: False, pause_hotkey=0x0A
+    )
+    engine.start()
+    time.sleep(0.5)
+    engine.stop()
+    engine.join(2)
+    assert pauses == [1]
+
+
+def test_the_pause_key_is_ignored_outside_fortnite(monkeypatch):
+    scripted_pause_key(monkeypatch, iter([True, False, False]))
+    template, _, frame, _ = prompt_scenes()
+
+    class Capture(FakeCapture):
+        frames = [frame]
+
+    engine, _, _, _, pauses = make_engine(
+        PromptMatcher([template], 0.8), Capture, lambda: False, pause_hotkey=0x0A, focused=lambda: False
+    )
+    engine.start()
+    time.sleep(0.5)
+    engine.stop()
+    engine.join(2)
+    assert pauses == []
+
+
+def test_the_pause_key_still_works_while_paused(monkeypatch):
+    scripted_pause_key(monkeypatch, iter([False] * 5 + [True]))
+    template, _, frame, _ = prompt_scenes()
+
+    class Capture(FakeCapture):
+        frames = [frame]
+
+    engine, _, _, _, pauses = make_engine(
+        PromptMatcher([template], 0.8), Capture, lambda: False, pause_hotkey=0x0A
+    )
+    engine.paused.set()
+    engine.start()
+    time.sleep(0.6)
+    engine.stop()
+    engine.join(2)
+    assert pauses == [1]
